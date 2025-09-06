@@ -8,6 +8,7 @@ set(PROJECT_VER "1.8.9")
 
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
+#add_compile_options(-DMY_WEIRDBOARD=1)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)

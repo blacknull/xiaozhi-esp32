@@ -6,8 +6,10 @@
 #include "button.h"
 #include "config.h"
 #include "mcp_server.h"
-#include "lamp_controller.h"
 #include "led/single_led.h"
+#include "led/circular_strip.h"
+#include "lamp_controller.h"
+#include "led_strip_controller.h"
 #include "esp32_camera.h"
 
 #include <wifi_station.h>
@@ -69,7 +71,7 @@ private:
  
     Button boot_button_;
     LcdDisplay* display_;
-     Esp32Camera* camera_;
+    Esp32Camera* camera_;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -159,7 +161,7 @@ private:
         config.pin_reset = CAMERA_PIN_RESET;
         config.xclk_freq_hz = XCLK_FREQ_HZ;
         config.pixel_format = PIXFORMAT_RGB565;
-        config.frame_size = FRAMESIZE_QVGA;
+        config.frame_size = FRAMESIZE_SVGA;
         config.jpeg_quality = 12;
         config.fb_count = 1;
         config.fb_location = CAMERA_FB_IN_PSRAM;
@@ -178,6 +180,14 @@ private:
         });
     }
 
+    // 物联网初始化，逐步迁移到 MCP 协议
+    CircularStrip* led_ = nullptr;
+    LedStripController* led_strip_controller_ = nullptr;
+    void InitializeTools() {
+        led_ = new CircularStrip(BUILTIN_LED_GPIO, 1);
+        led_strip_controller_ = new LedStripController(led_);
+    }
+
 public:
     CompactWifiBoardS3Cam() :
         boot_button_(BOOT_BUTTON_GPIO) {
@@ -185,6 +195,8 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
         InitializeCamera();
+        InitializeTools();
+
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
@@ -192,8 +204,9 @@ public:
     }
 
     virtual Led* GetLed() override {
-        static SingleLed led(BUILTIN_LED_GPIO);
-        return &led;
+        //static SingleLed led(BUILTIN_LED_GPIO);
+        //return &led;
+        return led_;        
     }
 
     virtual AudioCodec* GetAudioCodec() override {

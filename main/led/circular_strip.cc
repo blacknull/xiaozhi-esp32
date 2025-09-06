@@ -183,6 +183,11 @@ void CircularStrip::SetBrightness(uint8_t default_brightness, uint8_t low_bright
 }
 
 void CircularStrip::OnStateChanged() {
+    if (true) {
+        //this->SetSingleColor(0, {0, 255, 0});
+        return;
+    }
+
     auto& app = Application::GetInstance();
     auto device_state = app.GetDeviceState();
     switch (device_state) {

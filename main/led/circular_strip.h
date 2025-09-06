@@ -25,6 +25,13 @@ public:
     void SetBrightness(uint8_t default_brightness, uint8_t low_brightness);
     void SetAllColor(StripColor color);
     void SetSingleColor(uint8_t index, StripColor color);
+    StripColor GetSingleColor(uint8_t index) const{
+        if (index >= max_leds_) {
+            return {0, 0, 0};
+        }
+        return colors_[index];
+    }
+    int GetLedCount() const { return max_leds_; }
     void Blink(StripColor color, int interval_ms);
     void Breathe(StripColor low, StripColor high, int interval_ms);
     void Scroll(StripColor low, StripColor high, int length, int interval_ms);
