@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <esp_pthread.h>
+#include <driver/gpio.h>
 
 #include "application.h"
 #include "display.h"
@@ -20,6 +21,27 @@
 #define TAG "MCP"
 
 #define DEFAULT_TOOLCALL_STACK_SIZE 6144
+
+#define LED_GPIO_NUM GPIO_NUM_8
+static bool led_initialized = false;
+static bool led_power_state = false;
+
+// 初始化 LED GPIO
+static void InitializeLedGpio() {
+    if (!led_initialized) {
+        gpio_config_t config = {
+            .pin_bit_mask = (1ULL << LED_GPIO_NUM),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&config));
+        gpio_set_level(LED_GPIO_NUM, 0);  // 初始化为关闭状态
+        led_initialized = true;
+        led_power_state = false;
+    }
+}
 
 McpServer::McpServer() {
 }
@@ -63,6 +85,31 @@ void McpServer::AddCommonTools() {
             codec->SetOutputVolume(properties["volume"].value<int>());
             return true;
         });
+
+    AddTool("self.led.get_status",
+        "Get the current status of the LED light, including whether it's on or off.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            InitializeLedGpio();
+            return "{\"led\":{\"power\":" + std::string(led_power_state ? "true" : "false") + 
+                   ",\"gpio\":8,\"message\":\"LED status retrieved successfully\"}}";
+        });
+
+    AddTool("self.led.set_power",
+        "Control the LED light power state. This tool can turn the LED on or off by controlling GPIO8.",
+        PropertyList({
+            Property("power", kPropertyTypeBoolean)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            InitializeLedGpio();
+            bool power = properties["power"].value<bool>();
+            
+            led_power_state = power;
+            gpio_set_level(LED_GPIO_NUM, power ? 1 : 0);
+            
+            return "{\"led\":{\"power\":" + std::string(power ? "true" : "false") + 
+                   ",\"gpio\":8,\"message\":\"LED " + std::string(power ? "turned on" : "turned off") + " successfully\"}}";
+        });        
     
     auto backlight = board.GetBacklight();
     if (backlight) {

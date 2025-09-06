@@ -26,7 +26,10 @@ public:
             return power_ ? "{\"power\": true}" : "{\"power\": false}";
         });
 
-        mcp_server.AddTool("self.lamp.turn_on", "Turn on the lamp", PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
+        mcp_server.AddTool("self.lamp.turn_on", 
+            "Turn on the lamp", 
+            PropertyList(), 
+            [this](const PropertyList& properties) -> ReturnValue {                
             power_ = true;
             gpio_set_level(gpio_num_, 1);
             return true;

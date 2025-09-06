@@ -106,7 +106,11 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
             .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
             .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
             .slot_mode = I2S_SLOT_MODE_MONO,
+        #ifdef MY_WIREDBOARD    
+            .slot_mask = I2S_STD_SLOT_RIGHT,     //I2S_STD_SLOT_LEFT,
+        #else
             .slot_mask = I2S_STD_SLOT_LEFT,
+        #endif // MY_WIREDBOARD        
             .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
             .ws_pol = false,
             .bit_shift = true,
@@ -140,6 +144,9 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     std_cfg.gpio_cfg.ws = mic_ws;
     std_cfg.gpio_cfg.dout = I2S_GPIO_UNUSED;
     std_cfg.gpio_cfg.din = mic_din;
+#ifdef MY_WIREDBOARD    
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT; // reset to left
+#endif // MY_WIREDBOARD    
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
     ESP_LOGI(TAG, "Simplex channels created");
 }

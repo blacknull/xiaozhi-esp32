@@ -98,7 +98,12 @@ private:
         ESP_LOGI(TAG, "Turning display on");
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
 
-        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+    #ifdef MY_WIREDBOARD
+        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, false, false, //DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y,
+    #else
+        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y,
+    #endif // MY_WIREDBOARD        
+            {&font_puhui_14_1, &font_awesome_14_1});
     }
 
     void InitializeButtons() {
