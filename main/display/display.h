@@ -25,12 +25,16 @@ public:
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
+    virtual void SetMusicInfo(const char* song_name);
     virtual void SetIcon(const char* icon);
     virtual void SetPreviewImage(const lv_img_dsc_t* image);
     virtual void SetTheme(const std::string& theme_name);
     virtual std::string GetTheme() { return current_theme_name_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
+    virtual void start() {}
+    virtual void clearScreen() {}  // 清除FFT显示，默认为空实现
+    virtual void stopFft() {}      // 停止FFT显示，默认为空实现
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }
