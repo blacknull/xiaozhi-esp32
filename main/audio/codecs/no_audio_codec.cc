@@ -221,7 +221,79 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     ESP_LOGI(TAG, "Simplex channels created");
 }
 
-NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, gpio_num_t mic_sck, gpio_num_t mic_din) {
+int NoAudioCodec::Write(const int16_t* data, int samples) {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    std::vector<int32_t> buffer(samples);
+
+    // output_volume_: 0-100
+    // volume_factor_: 0-65536
+    int32_t volume_factor = pow(double(output_volume_) / 100.0, 2) * 65536;
+    for (int i = 0; i < samples; i++) {
+        int64_t temp = int64_t(data[i]) * volume_factor; // 使用 int64_t 进行乘法运算
+        if (temp > INT32_MAX) {
+            buffer[i] = INT32_MAX;
+        } else if (temp < INT32_MIN) {
+            buffer[i] = INT32_MIN;
+        } else {
+            buffer[i] = static_cast<int32_t>(temp);
+        }
+    }
+
+    size_t bytes_written;
+    ESP_ERROR_CHECK(i2s_channel_write(tx_handle_, buffer.data(), samples * sizeof(int32_t), &bytes_written, portMAX_DELAY));
+    return bytes_written / sizeof(int32_t);
+}
+
+int NoAudioCodec::Read(int16_t* dest, int samples) {
+    size_t bytes_read;
+    constexpr TickType_t kReadTimeoutTicks = pdMS_TO_TICKS(200);
+
+    std::vector<int32_t> bit32_buffer(samples);
+    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutTicks) != ESP_OK) {
+        return 0;
+    }
+
+    samples = bytes_read / sizeof(int32_t);
+    for (int i = 0; i < samples; i++) {
+        int32_t value = bit32_buffer[i] >> 12;
+        dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+    }
+    return samples;
+}
+
+void NoAudioCodec::EnableInput(bool enable) {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (enable == input_enabled_) {
+        return;
+    }
+    if (enable) {
+        ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
+    } else {
+        ESP_ERROR_CHECK(i2s_channel_disable(rx_handle_));
+    }
+    AudioCodec::EnableInput(enable);
+}
+
+void NoAudioCodec::EnableOutput(bool enable) {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (enable == output_enabled_) {
+        return;
+    }
+    if (enable) {
+        ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
+    } else {
+        ESP_ERROR_CHECK(i2s_channel_disable(tx_handle_));
+    }
+    AudioCodec::EnableOutput(enable);
+}
+
+// Delegating constructor: calls the main constructor with default slot mask
+NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, gpio_num_t mic_sck, gpio_num_t mic_din) 
+    : NoAudioCodecSimplexPdm(input_sample_rate, output_sample_rate, spk_bclk, spk_ws, spk_dout, I2S_STD_SLOT_LEFT, mic_sck, mic_din) {
+    // All initialization is handled by the delegated constructor
+}
+
+NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk, gpio_num_t spk_ws, gpio_num_t spk_dout, i2s_std_slot_mask_t spk_slot_mask, gpio_num_t mic_sck, gpio_num_t mic_din) {
     duplex_ = false;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
@@ -246,7 +318,21 @@ NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output
 			#endif
 
         },
-        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = {
+            .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
+            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode = I2S_SLOT_MODE_MONO,
+            .slot_mask = spk_slot_mask,
+            .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
+            .ws_pol = false,
+            .bit_shift = true,
+            #ifdef   I2S_HW_VERSION_2
+                .left_align = true,
+                .big_endian = false,
+                .bit_order_lsb = false
+            #endif
+
+        },
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = spk_bclk,
@@ -285,46 +371,6 @@ NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output
     ESP_LOGI(TAG, "Simplex channels created");
 }
 
-int NoAudioCodec::Write(const int16_t* data, int samples) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
-    std::vector<int32_t> buffer(samples);
-
-    // output_volume_: 0-100
-    // volume_factor_: 0-65536
-    int32_t volume_factor = pow(double(output_volume_) / 100.0, 2) * 65536;
-    for (int i = 0; i < samples; i++) {
-        int64_t temp = int64_t(data[i]) * volume_factor; // 使用 int64_t 进行乘法运算
-        if (temp > INT32_MAX) {
-            buffer[i] = INT32_MAX;
-        } else if (temp < INT32_MIN) {
-            buffer[i] = INT32_MIN;
-        } else {
-            buffer[i] = static_cast<int32_t>(temp);
-        }
-    }
-
-    size_t bytes_written;
-    ESP_ERROR_CHECK(i2s_channel_write(tx_handle_, buffer.data(), samples * sizeof(int32_t), &bytes_written, portMAX_DELAY));
-    return bytes_written / sizeof(int32_t);
-}
-
-int NoAudioCodec::Read(int16_t* dest, int samples) {
-    size_t bytes_read;
-
-    std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, portMAX_DELAY) != ESP_OK) {
-        ESP_LOGE(TAG, "Read Failed!");
-        return 0;
-    }
-
-    samples = bytes_read / sizeof(int32_t);
-    for (int i = 0; i < samples; i++) {
-        int32_t value = bit32_buffer[i] >> 12;
-        dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
-    }
-    return samples;
-}
-
 int NoAudioCodecSimplexPdm::Read(int16_t* dest, int samples) {
     size_t bytes_read;
 
@@ -334,6 +380,13 @@ int NoAudioCodecSimplexPdm::Read(int16_t* dest, int samples) {
         return 0;
     }
 
-    // 计算实际读取的样本数
-    return bytes_read / sizeof(int16_t);
+    samples = bytes_read / sizeof(int16_t);
+    if (input_gain_ > 0) {
+        int gain_factor = (int)input_gain_;
+        for (int i = 0; i < samples; i++) {
+            int32_t amplified = dest[i] * gain_factor;
+            dest[i] = (amplified > INT16_MAX) ? INT16_MAX : (amplified < -INT16_MAX) ? -INT16_MAX : (int16_t)amplified;
+        }
+    }
+    return samples;
 }

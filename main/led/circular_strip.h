@@ -18,7 +18,7 @@ struct StripColor {
 
 class CircularStrip : public Led {
 public:
-    CircularStrip(gpio_num_t gpio, uint8_t max_leds);
+    CircularStrip(gpio_num_t gpio, uint16_t max_leds);
     virtual ~CircularStrip();
 
     void OnStateChanged() override;
@@ -32,6 +32,7 @@ public:
         return colors_[index];
     }
     int GetLedCount() const { return max_leds_; }
+    void SetMultiColors(const std::vector<StripColor>& colors);
     void Blink(StripColor color, int interval_ms);
     void Breathe(StripColor low, StripColor high, int interval_ms);
     void Scroll(StripColor low, StripColor high, int length, int interval_ms);

@@ -12,11 +12,44 @@
 
 MqttProtocol::MqttProtocol() {
     event_group_handle_ = xEventGroupCreate();
+
+    // Initialize reconnect timer
+    esp_timer_create_args_t reconnect_timer_args = {
+        .callback = [](void* arg) {
+            MqttProtocol* protocol = (MqttProtocol*)arg;
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                ESP_LOGI(TAG, "Reconnecting to MQTT server");
+                auto alive = protocol->alive_;  // Capture alive flag
+                app.Schedule([protocol, alive]() {
+                    if (*alive) {
+                        protocol->StartMqttClient(false);
+                    }
+                });
+            }
+        },
+        .arg = this,
+    };
+    esp_timer_create(&reconnect_timer_args, &reconnect_timer_);
 }
 
 MqttProtocol::~MqttProtocol() {
     ESP_LOGI(TAG, "MqttProtocol deinit");
-    vEventGroupDelete(event_group_handle_);
+    
+    // Mark as dead first to prevent any pending scheduled tasks from executing
+    *alive_ = false;
+    
+    if (reconnect_timer_ != nullptr) {
+        esp_timer_stop(reconnect_timer_);
+        esp_timer_delete(reconnect_timer_);
+    }
+
+    udp_.reset();
+    mqtt_.reset();
+    
+    if (event_group_handle_ != nullptr) {
+        vEventGroupDelete(event_group_handle_);
+    }
 }
 
 bool MqttProtocol::Start() {
@@ -50,7 +83,18 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     mqtt_->SetKeepAlive(keepalive_interval);
 
     mqtt_->OnDisconnected([this]() {
-        ESP_LOGI(TAG, "Disconnected from endpoint");
+        if (on_disconnected_ != nullptr) {
+            on_disconnected_();
+        }
+        ESP_LOGI(TAG, "MQTT disconnected, schedule reconnect in %d seconds", MQTT_RECONNECT_INTERVAL_MS / 1000);
+        esp_timer_start_once(reconnect_timer_, MQTT_RECONNECT_INTERVAL_MS * 1000);
+    });
+
+    mqtt_->OnConnected([this]() {
+        if (on_connected_ != nullptr) {
+            on_connected_();
+        }
+        esp_timer_stop(reconnect_timer_);
     });
 
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {
@@ -72,8 +116,12 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
             auto session_id = cJSON_GetObjectItem(root, "session_id");
             ESP_LOGI(TAG, "Received goodbye message, session_id: %s", session_id ? session_id->valuestring : "null");
             if (session_id == nullptr || session_id_ == session_id->valuestring) {
-                Application::GetInstance().Schedule([this]() {
-                    CloseAudioChannel();
+                auto alive = alive_;  // Capture alive flag
+                Application::GetInstance().Schedule([this, alive]() {
+                    if (*alive) {
+                        // Server initiated goodbye, don't send goodbye back to avoid ping-pong
+                        CloseAudioChannel(false);
+                    }
                 });
             }
         } else if (on_incoming_json_ != nullptr) {
@@ -94,7 +142,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         broker_address = endpoint;
     }
     if (!mqtt_->Connect(broker_address, broker_port, client_id, username, password)) {
-        ESP_LOGE(TAG, "Failed to connect to endpoint");
+        ESP_LOGE(TAG, "Failed to connect to endpoint, code=%d", mqtt_->GetLastError());
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
         return false;
     }
@@ -141,17 +189,23 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     return udp_->Send(encrypted) > 0;
 }
 
-void MqttProtocol::CloseAudioChannel() {
+void MqttProtocol::CloseAudioChannel(bool send_goodbye) {
     {
         std::lock_guard<std::mutex> lock(channel_mutex_);
         udp_.reset();
     }
 
-    std::string message = "{";
-    message += "\"session_id\":\"" + session_id_ + "\",";
-    message += "\"type\":\"goodbye\"";
-    message += "}";
-    SendText(message);
+    ESP_LOGI(TAG, "Closing audio channel, send_goodbye: %d", send_goodbye);
+
+    // Only send goodbye when client initiates the close
+    // Don't send if server already sent goodbye (to avoid ping-pong)
+    if (send_goodbye) {
+        std::string message = "{";
+        message += "\"session_id\":\"" + session_id_ + "\",";
+        message += "\"type\":\"goodbye\"";
+        message += "}";
+        SendText(message);
+    }
 
     if (on_audio_channel_closed_ != nullptr) {
         on_audio_channel_closed_();

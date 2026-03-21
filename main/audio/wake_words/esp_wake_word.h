@@ -9,6 +9,7 @@
 #include <vector>
 #include <functional>
 #include <atomic>
+#include <mutex>
 
 #include "audio_codec.h"
 #include "wake_word.h"
@@ -18,7 +19,7 @@ public:
     EspWakeWord();
     ~EspWakeWord();
 
-    bool Initialize(AudioCodec* codec);
+    bool Initialize(AudioCodec* codec, srmodel_list_t* models_list);
     void Feed(const std::vector<int16_t>& data);
     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
     void Start();
@@ -37,6 +38,8 @@ private:
 
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
     std::string last_detected_wake_word_;
+    std::vector<int16_t> input_buffer_;
+    std::mutex input_buffer_mutex_;
 };
 
 #endif

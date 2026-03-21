@@ -4,7 +4,6 @@
 #include "button.h"
 #include "config.h"
 #include "mcp_server.h"
-#include <wifi_station.h>
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
@@ -23,7 +22,7 @@
 #include "servo_dog_ctrl.h"
 #include "led_strip.h"
 #include "driver/rmt_tx.h"
-#include "device_state_event.h"
+#include "device_state.h"
 
 #include "sdkconfig.h"
 
@@ -171,8 +170,10 @@ private:
 
         boot_button_.OnClick([this]() {
             auto &app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-                ResetWifiConfiguration();
+            // During startup (before connected), pressing BOOT button enters Wi-Fi config mode without reboot
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
             }
             app.ToggleChatState();
         });
@@ -223,6 +224,7 @@ private:
         SetLedColor(0x00, 0x00, 0x00);
 
 #ifdef CONFIG_ESP_HI_WEB_CONTROL_ENABLED
+        esp_event_loop_create_default();
         ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED,
                                                  &wifi_event_handler, this));
 #endif //CONFIG_ESP_HI_WEB_CONTROL_ENABLED
@@ -397,11 +399,6 @@ public:
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeTools();
-
-        DeviceStateEventManager::GetInstance().RegisterStateChangeCallback([this](DeviceState previous_state, DeviceState current_state) {
-            ESP_LOGD(TAG, "Device state changed from %d to %d", previous_state, current_state);
-            this->GetAudioCodec()->EnableOutput(current_state == kDeviceStateSpeaking);
-        });
     }
 
     virtual AudioCodec* GetAudioCodec() override
