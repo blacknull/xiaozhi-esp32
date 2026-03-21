@@ -79,7 +79,7 @@ private:
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
-    AudioService audio_service_;
+    AudioService& audio_service_ = *(new AudioService()); // 使用 new 在PSRAM创建 AudioService 实例
 
     bool has_server_time_ = false;
     bool aborted_ = false;

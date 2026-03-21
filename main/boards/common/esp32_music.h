@@ -92,6 +92,9 @@ public:
     Esp32Music();
     ~Esp32Music();
 
+    void* operator new(size_t size);
+    void operator delete(void *ptr) noexcept;
+    
     virtual bool Download(const std::string& song_name, const std::string& artist_name) override;
   
     virtual std::string GetDownloadResult() override;

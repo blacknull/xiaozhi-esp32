@@ -62,6 +62,7 @@ void Display::SetMusicInfo(const char* song_name) {
 }
 
 void Display::SetTheme(Theme* theme) {
+    if (theme == nullptr) return;
     current_theme_ = theme;
     Settings settings("display", true);
     settings.SetString("theme", theme->name());

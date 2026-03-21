@@ -161,8 +161,8 @@ bool Assets::Apply() {
                 ESP_LOGE(TAG, "Failed to load fonts.bin");
                 return false;
             }
-            light_theme->set_text_font(text_font);
-            dark_theme->set_text_font(text_font);
+            if (light_theme) light_theme->set_text_font(text_font);
+            if (dark_theme) dark_theme->set_text_font(text_font);
         } else {
             ESP_LOGE(TAG, "The font file %s is not found", fonts_text_file.c_str());
         }
@@ -186,14 +186,14 @@ bool Assets::Apply() {
                 }
             }
         }
-        light_theme->set_emoji_collection(custom_emoji_collection);
-        dark_theme->set_emoji_collection(custom_emoji_collection);
+        if (light_theme) light_theme->set_emoji_collection(custom_emoji_collection);
+        if (dark_theme) dark_theme->set_emoji_collection(custom_emoji_collection);
     }
 
     cJSON* skin = cJSON_GetObjectItem(root, "skin");
     if (cJSON_IsObject(skin)) {
         cJSON* light_skin = cJSON_GetObjectItem(skin, "light");
-        if (cJSON_IsObject(light_skin)) {
+        if (cJSON_IsObject(light_skin) && light_theme) {
             cJSON* text_color = cJSON_GetObjectItem(light_skin, "text_color");
             cJSON* background_color = cJSON_GetObjectItem(light_skin, "background_color");
             cJSON* background_image = cJSON_GetObjectItem(light_skin, "background_image");
@@ -214,7 +214,7 @@ bool Assets::Apply() {
             }
         }
         cJSON* dark_skin = cJSON_GetObjectItem(skin, "dark");
-        if (cJSON_IsObject(dark_skin)) {
+        if (cJSON_IsObject(dark_skin) && dark_theme) {
             cJSON* text_color = cJSON_GetObjectItem(dark_skin, "text_color");
             cJSON* background_color = cJSON_GetObjectItem(dark_skin, "background_color");
             cJSON* background_image = cJSON_GetObjectItem(dark_skin, "background_image");
@@ -239,7 +239,8 @@ bool Assets::Apply() {
 
     auto display = Board::GetInstance().GetDisplay();
     ESP_LOGI(TAG, "Refreshing display theme...");
-    display->SetTheme(display->GetTheme());
+    auto current_theme = display->GetTheme();
+    if (current_theme) display->SetTheme(current_theme);
     cJSON_Delete(root);
     return true;
 }

@@ -27,6 +27,22 @@ public:
     Esp32Camera(const camera_config_t& config);
     ~Esp32Camera();
 
+    void* operator new(size_t size) {
+        // 分配内存时指定使用PSRAM
+        void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+        if (ptr == nullptr) {
+            // 分配失败时抛出bad_alloc异常（符合C++标准）
+            throw std::bad_alloc();
+        }
+        return ptr;
+    }
+    void operator delete(void *ptr) noexcept {
+        if (ptr != nullptr) {
+            // 使用对应的heap_caps_free释放PSRAM内存
+            heap_caps_free(ptr);
+        }
+    }
+
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture();
     // 翻转控制函数

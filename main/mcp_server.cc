@@ -328,6 +328,7 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
                     token_str = std::string(token->valuestring);
                 }
                 camera->SetExplainUrl(url_str, token_str);
+                ESP_LOGI(TAG, "Set camera explain url: %s", url_str.c_str());
             }
         }
     }

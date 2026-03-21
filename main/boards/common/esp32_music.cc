@@ -281,6 +281,28 @@ Esp32Music::~Esp32Music() {
     ESP_LOGI(TAG, "Music player destroyed successfully");
 }
 
+// 重载new运算符：从PSRAM分配内存
+// 使用ESP-IDF的heap_caps_malloc，指定MALLOC_CAP_SPIRAM标志
+void* Esp32Music::operator new(size_t size)
+{
+    // 分配内存时指定使用PSRAM
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (ptr == nullptr) {
+        // 分配失败时抛出bad_alloc异常（符合C++标准）
+        throw std::bad_alloc();
+    }
+    return ptr;
+}
+
+// 重载delete运算符：释放PSRAM内存
+void Esp32Music::operator delete(void *ptr) noexcept
+{
+    if (ptr != nullptr) {
+        // 使用对应的heap_caps_free释放PSRAM内存
+        heap_caps_free(ptr);
+    }
+}
+
 bool Esp32Music::Download(const std::string& song_name, const std::string& artist_name) {
     ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
     ESP_LOGI(TAG, "Starting to get music details for: %s", song_name.c_str());
@@ -1139,7 +1161,7 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
     int retry_count = 0;
     bool success = false;
     std::string lyric_content;
-    std::string current_url = lyric_url;
+    //std::string current_url = lyric_url;
     int redirect_count = 0;
     const int max_redirects = 5;  // 最多允许5次重定向
     
@@ -1168,7 +1190,7 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
         
         // 打开GET连接
         ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
-        if (!http->Open("GET", current_url)) {
+        if (!http->Open("GET", lyric_url)) {    //current_url)) {
             ESP_LOGE(TAG, "Failed to open HTTP connection for lyrics");
             // 移除delete http; 因为unique_ptr会自动管理内存
             retry_count++;
@@ -1198,7 +1220,17 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
         
         // 读取响应
         lyric_content.clear();
-        char buffer[1024];
+
+        const size_t BUFFER_SIZE = 2048;  // 2KB缓冲区
+        //char buffer[1024];
+        char* buffer = (char*)heap_caps_malloc(BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+        if (!buffer) {
+            ESP_LOGE(TAG, "Failed to allocate memory for lyric download buffer");
+            http->Close();
+            retry_count++;
+            continue;
+        }
+
         int bytes_read;
         bool read_error = false;
         int total_read = 0;
@@ -1207,7 +1239,7 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
         ESP_LOGD(TAG, "Starting to read lyric content");
         
         while (true) {
-            bytes_read = http->Read(buffer, sizeof(buffer) - 1);
+            bytes_read = http->Read(buffer, BUFFER_SIZE - 1);
             // ESP_LOGD(TAG, "Lyric HTTP read returned %d bytes", bytes_read); // 注释掉以减少日志输出
             
             if (bytes_read > 0) {
@@ -1215,10 +1247,11 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
                 lyric_content += buffer;
                 total_read += bytes_read;
                 
-                // 定期打印下载进度 - 改为DEBUG级别减少输出
+                /*// 定期打印下载进度 - 改为DEBUG级别减少输出
                 if (total_read % 4096 == 0) {
                     ESP_LOGD(TAG, "Downloaded %d bytes so far", total_read);
                 }
+                //*/
             } else if (bytes_read == 0) {
                 // 正常结束，没有更多数据
                 ESP_LOGD(TAG, "Lyric download completed, total bytes: %d", total_read);
@@ -1237,6 +1270,11 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
                     break;
                 }
             }
+        }
+
+        if (buffer) {
+            heap_caps_free(buffer);
+            buffer = nullptr;
         }
         
         http->Close();
@@ -1258,7 +1296,7 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
         return false;
     }
     
-    // 记录前几个字节的数据，帮助调试
+    /*// 记录前几个字节的数据，帮助调试
     if (!lyric_content.empty()) {
         size_t preview_size = std::min(lyric_content.size(), size_t(50));
         std::string preview = lyric_content.substr(0, preview_size);
@@ -1267,6 +1305,7 @@ bool Esp32Music::DownloadLyrics(const std::string& lyric_url) {
         ESP_LOGE(TAG, "Failed to download lyrics or lyrics are empty");
         return false;
     }
+    //*/
     
     ESP_LOGI(TAG, "Lyrics downloaded successfully, size: %d bytes", lyric_content.length());
     return ParseLyrics(lyric_content);
