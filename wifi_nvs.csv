@@ -1,0 +1,4 @@
+key,type,encoding,value
+wifi,namespace,,
+ssid,data,string,HUAWEI-Matrix
+password,data,string,20100822abc

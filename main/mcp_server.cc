@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cctype>
 #include <esp_pthread.h>
+#include <esp_heap_caps.h>
 
 #include "application.h"
 #include "display.h"
@@ -541,6 +542,8 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
     }
 
     // Start a task to receive data with stack size
+    // 注意：tool_call 线程可能访问 NVS/SPI Flash（如 DeviceManager、Settings），
+    // 因此栈必须在 SRAM，不能用 PSRAM（禁用缓存时 PSRAM 不可访问）
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
     cfg.thread_name = "tool_call";
     cfg.stack_size = stack_size;

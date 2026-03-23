@@ -1,6 +1,8 @@
 #include "audio_service.h"
 #include <esp_log.h>
 #include <cstring>
+#include <freertos/idf_additions.h>
+#include <esp_heap_caps.h>
 
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "processors/afe_audio_processor.h"
@@ -99,41 +101,46 @@ void AudioService::Start() {
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
 #if CONFIG_USE_AUDIO_PROCESSOR
-    /* Start the audio input task */
-    xTaskCreatePinnedToCore([](void* arg) {
+    /* Start the audio input task (PSRAM stack: no NVS access) */
+    xTaskCreatePinnedToCoreWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioInputTask();
-        vTaskDelete(NULL);
-    }, "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 1);
+        vTaskDeleteWithCaps(NULL);
+    }, "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 1,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
-    /* Start the audio output task */
-    xTaskCreate([](void* arg) {
+    /* Start the audio output task (PSRAM stack: no NVS access) */
+    xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_);
+        vTaskDeleteWithCaps(NULL);
+    }, "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #else
-    /* Start the audio input task */
-    xTaskCreate([](void* arg) {
+    /* Start the audio input task (PSRAM stack: no NVS access) */
+    xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioInputTask();
-        vTaskDelete(NULL);
-    }, "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_);
+        vTaskDeleteWithCaps(NULL);
+    }, "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
-    /* Start the audio output task */
-    xTaskCreate([](void* arg) {
+    /* Start the audio output task (PSRAM stack: no NVS access) */
+    xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioOutputTask();
-        vTaskDelete(NULL);
-    }, "audio_output", 2048, this, 4, &audio_output_task_handle_);
+        vTaskDeleteWithCaps(NULL);
+    }, "audio_output", 2048, this, 4, &audio_output_task_handle_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 #endif
 
-    /* Start the opus codec task */
-    xTaskCreate([](void* arg) {
+    /* Start the opus codec task (PSRAM stack: no NVS access, saves ~26KB SRAM) */
+    xTaskCreateWithCaps([](void* arg) {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->OpusCodecTask();
-        vTaskDelete(NULL);
-    }, "opus_codec", 2048 * 13, this, 2, &opus_codec_task_handle_);
+        vTaskDeleteWithCaps(NULL);
+    }, "opus_codec", 2048 * 13, this, 2, &opus_codec_task_handle_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
 void AudioService::Stop() {

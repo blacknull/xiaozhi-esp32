@@ -56,13 +56,17 @@ private:
     int64_t last_frame_time_ms_;    // 上一帧的时间戳
     int total_frames_decoded_;      // 已解码的帧数
 
+    // 线程操作互斥锁，防止 StopStreaming/StartStreaming 并发 join 同一线程
+    std::mutex thread_ops_mutex_;
+
     // 音频缓冲区
     std::queue<AudioChunk> audio_buffer_;
     std::mutex buffer_mutex_;
     std::condition_variable buffer_cv_;
     size_t buffer_size_;
-    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB缓冲区（降低以减少brownout风险）
-    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB最小播放缓冲（降低以减少brownout风险）
+    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;    // 256KB缓冲区（降低以减少brownout风险）
+    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;    // 32KB持续播放最小缓冲
+    static constexpr size_t INITIAL_BUFFER_SIZE = 128 * 1024; // 128KB初始启动缓冲（避免bit reservoir不足导致开头卡顿）
     
     // MP3解码器相关
     HMP3Decoder mp3_decoder_;

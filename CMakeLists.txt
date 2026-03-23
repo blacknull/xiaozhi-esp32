@@ -13,8 +13,10 @@ add_compile_options(-Wno-missing-field-initializers)
 #add_compile_options(-DMY_WEIRDBOARD=1)
 
 # Uncomment to temporarily disable OTA firmware upgrade (server config/time sync still works)
-#add_compile_definitions(CONFIG_DISABLE_OTA_UPGRADE)
 add_compile_options(-DCONFIG_DISABLE_OTA_UPGRADE=1)
+
+# Uncomment to show user/assistant chat text on display during conversation (default: off)
+#add_compile_options(-DCONFIG_SHOW_CHAT_MSG=1)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
