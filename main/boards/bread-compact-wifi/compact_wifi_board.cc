@@ -93,6 +93,7 @@ private:
             return;
         }
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, false));
+        ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
 
         // Set the display to on
         ESP_LOGI(TAG, "Turning display on");
@@ -101,7 +102,7 @@ private:
     #ifdef MY_WEIRDBOARD
         display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, false, false);
     #else
-        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, false, false);
     #endif // MY_WEIRDBOARD
     }
 

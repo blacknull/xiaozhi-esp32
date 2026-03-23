@@ -129,7 +129,7 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion(Ota& ota) {
-    const int MAX_RETRY = 10;
+    const int MAX_RETRY = 3;
     int retry_count = 0;
     int retry_delay = 10; // 初始重试延迟为10秒
 
@@ -143,6 +143,20 @@ void Application::CheckNewVersion(Ota& ota) {
             retry_count++;
             if (retry_count >= MAX_RETRY) {
                 ESP_LOGE(TAG, "Too many retries, exit version check");
+                // 如果当前 OTA URL 与编译默认值不同，尝试用默认地址再连一次
+                std::string current_url = ota.GetCheckVersionUrl();
+                if (current_url != CONFIG_OTA_URL) {
+                    ESP_LOGW(TAG, "Retrying with default OTA URL: %s", CONFIG_OTA_URL);
+                    Settings settings("wifi", true);
+                    settings.SetString("ota_url", CONFIG_OTA_URL);
+                    display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
+                    if (ota.CheckVersion()) {
+                        ESP_LOGI(TAG, "Connected with default OTA URL, NVS updated");
+                        retry_count = 0;
+                        retry_delay = 10;
+                        continue;
+                    }
+                }
                 return;
             }
 
@@ -151,7 +165,10 @@ void Application::CheckNewVersion(Ota& ota) {
             Alert(Lang::Strings::ERROR, buffer, "cloud_slash", Lang::Sounds::OGG_EXCLAMATION);
 
             ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d)", retry_delay, retry_count, MAX_RETRY);
-            for (int i = 0; i < retry_delay; i++) {
+            for (int i = retry_delay; i > 0; i--) {
+                char countdown[32];
+                snprintf(countdown, sizeof(countdown), "%s (%ds)", Lang::Strings::ERROR, i);
+                display->SetStatus(countdown);
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 if (device_state_ == kDeviceStateIdle) {
                     break;
