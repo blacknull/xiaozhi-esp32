@@ -18,7 +18,8 @@
 //    - http://http-embedded-music.miao-lab.top:2233
 
 // 👇 在这里修改您的服务器地址
-#define MUSIC_SERVER_URL "http://192.168.1.58:2233"
+//#define MUSIC_SERVER_URL "http://192.168.1.58:2233"
+#define MUSIC_SERVER_URL "http://120.77.77.180:2233"
 
 // 自动生成的完整API地址（不要修改）
 #define MUSIC_API_URL             MUSIC_SERVER_URL "/stream_pcm"

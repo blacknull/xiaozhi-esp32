@@ -29,6 +29,9 @@ public:
     std::string GetFavorites();
     std::string GetUserPlaylists();
 
+    // WiFi 就绪后调用：若无 token 则从服务器拉取
+    void EnsureToken();
+
     // 检查设备是否已绑定
     bool IsDeviceBound();
 

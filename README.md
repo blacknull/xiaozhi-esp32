@@ -159,3 +159,75 @@
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
  </picture>
 </a>
+
+开发板：bread-compact-wifi-s3cam（ESP32-S3）
+
+已使用引脚（29个）
+GPIO	外设	功能
+0	按键	BOOT 按键
+1	I2S MIC	WS（字时钟）
+2	I2S MIC	SCK（位时钟）
+4	摄像头 I2C	SIOD（数据）
+5	摄像头 I2C	SIOC（时钟）
+6	摄像头 DVP	VSYNC
+7	摄像头 DVP	HREF
+8	摄像头 DVP	D2
+9	摄像头 DVP	D1
+10	摄像头 DVP	D3
+11	摄像头 DVP	D0
+12	摄像头 DVP	D4
+13	摄像头 DVP	PCLK
+14	GPIO 输出	LAMP（MCP 测试灯）
+15	摄像头 DVP	XCLK（主时钟）
+16	摄像头 DVP	D7
+17	摄像头 DVP	D6
+18	摄像头 DVP	D5
+19	SPI 显示	CLK（兼 USB D-）
+20	SPI 显示	MOSI（兼 USB D+）
+21	SPI 显示	RST
+38	SPI 显示	背光 PWM
+39	I2S SPK	DOUT
+40	I2S SPK	BCLK
+41	I2S SPK	LRCK
+42	I2S MIC	DIN
+45	SPI 显示	CS（strapping 引脚）
+47	SPI 显示	DC
+48	WS2812 LED	RGB LED 数据
+
+不可用引脚
+GPIO	原因
+22–25	ESP32-S3 上不存在
+26–32	芯片内部 SPI Flash（N8R8 模块不可引出）
+33–37	芯片内部 OPI PSRAM（N8R8 模块不可引出）
+
+空闲可用引脚（仅剩 4 个）
+GPIO	备注
+3	    完全空闲，可自由使用
+43	  默认 UART0 TX（串口监视器会丢失，谨慎复用）
+44	  默认 UART0 RX（同上）
+46	  Strapping 引脚：启动时须保持低电平，正常运行后可作普通 GPIO 使用
+空间极为有限，摄像头和显示屏几乎占满了所有引脚。如果后续需要扩展外设，只有 GPIO 3 是最安全的无限制选择；GPIO 46 可作为第二个选项（注意启动时序）。
+
+-------------------------------------------------------
+
+摄像头用的I2C可以和SSD1306的OLED共用。
+地址不冲突，可以共用。
+
+设备	I2C 地址
+OV2640 摄像头	0x30
+SSD1306 OLED（SA0=LOW）	0x3C
+SSD1306 OLED（SA0=HIGH）	0x3D
+三个地址都不一样，直接挂在 GPIO 4/5 上没问题。
+
+需要注意的一点
+你已经有一块 SPI LCD（GPIO 19/20/21 等）。再加 SSD1306 的话，有两种用途：
+
+辅助显示（比如显示状态信息、歌词等）——需要自己写驱动和控制逻辑
+替换现有 LCD——没必要，现有 LCD 更大更好
+如果是辅助显示用途，接线只需：
+
+SDA → GPIO 4（与摄像头共用）
+SCL → GPIO 5（与摄像头共用）
+VCC → 3.3V
+GND → GND
+代码层面，camera init 之后用 i2c_master_write_to_device(I2C_NUM_0, 0x3C, ...) 发初始化序列即可，不需要重新初始化总线。

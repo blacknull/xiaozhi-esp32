@@ -32,11 +32,8 @@ DeviceManager::DeviceManager() : is_bound_(false) {
     // 从NVS加载配置
     LoadFromNVS();
 
-    // 如果没有 token，尝试从服务器自动获取（可能已在网页端绑定）
-    if (device_token_.empty() && !mac_address_.empty()) {
-        ESP_LOGI(TAG, "No token found, trying to fetch from server...");
-        TryFetchTokenFromServer();
-    }
+    // token 不在构造函数里抓取：构造时 WiFi 尚未就绪，同步 HTTP 会卡死启动流程。
+    // 使用方在 WiFi 就绪后调用 EnsureToken()，或首次需要 token 时触发。
 }
 
 DeviceManager::~DeviceManager() {
@@ -44,6 +41,14 @@ DeviceManager::~DeviceManager() {
 
 std::string DeviceManager::GetMACAddress() {
     return mac_address_;
+}
+
+// WiFi 就绪后调用：若尚无 token 则尝试从服务器拉取（仅执行一次）
+void DeviceManager::EnsureToken() {
+    if (device_token_.empty() && !mac_address_.empty()) {
+        ESP_LOGI(TAG, "EnsureToken: no token, trying to fetch from server...");
+        TryFetchTokenFromServer();
+    }
 }
 
 void DeviceManager::LoadFromNVS() {

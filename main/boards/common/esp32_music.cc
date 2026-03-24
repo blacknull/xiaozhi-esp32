@@ -318,6 +318,9 @@ void Esp32Music::operator delete(void *ptr) noexcept
 bool Esp32Music::Download(const std::string& song_name, const std::string& artist_name) {
     ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
     ESP_LOGI(TAG, "Starting to get music details for: %s", song_name.c_str());
+
+    // WiFi 已就绪，确保已拿到设备 token（首次无 token 时从服务器拉取）
+    DeviceManager::GetInstance().EnsureToken();
     
     // 清空之前的下载数据
     last_downloaded_data_.clear();
@@ -778,6 +781,40 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
     ESP_LOGI(TAG, "Audio stream download thread finished");
 }
 
+// 计算 MP3 Layer3 帧字节数（用于双同步验证，排除假同步字）
+// 返回 0 表示帧头无效
+static int CalcMp3FrameSize(const uint8_t* hdr) {
+    if (!hdr || hdr[0] != 0xFF || (hdr[1] & 0xE0) != 0xE0) return 0;
+
+    int version_bits = (hdr[1] >> 3) & 0x3;  // 11=MPEG1 10=MPEG2 00=MPEG2.5 01=reserved
+    int layer_bits   = (hdr[1] >> 1) & 0x3;  // 01=LayerIII(MP3)
+    if (layer_bits != 1 || version_bits == 1) return 0;
+
+    int bitrate_idx = (hdr[2] >> 4) & 0xF;
+    if (bitrate_idx == 0 || bitrate_idx == 15) return 0;  // free/bad
+
+    int srate_idx = (hdr[2] >> 2) & 0x3;
+    if (srate_idx == 3) return 0;  // reserved
+
+    int padding = (hdr[2] >> 1) & 0x1;
+
+    // 比特率表 (kbps)
+    static const int br_v1[] = {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};
+    static const int br_v2[] = {0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0};
+    // 采样率表 (Hz)
+    static const int sr[][3] = {{44100,48000,32000},{22050,24000,16000},{11025,12000,8000}};
+
+    int ver_idx = (version_bits == 3) ? 0 : (version_bits == 2) ? 1 : 2;
+    int bitrate_kbps = (version_bits == 3) ? br_v1[bitrate_idx] : br_v2[bitrate_idx];
+    // MPEG1 Layer3: 1152 样本/帧; MPEG2/2.5 Layer3: 576 样本/帧
+    int spf = (version_bits == 3) ? 1152 : 576;  // samples per frame
+
+    int srate = sr[ver_idx][srate_idx];
+    if (bitrate_kbps == 0 || srate == 0) return 0;
+
+    return (spf / 8) * (bitrate_kbps * 1000) / srate + padding;
+}
+
 // 流式播放音频数据
 void Esp32Music::PlayAudioStream() {
     ESP_LOGI(TAG, "Starting audio stream playback");
@@ -973,6 +1010,29 @@ void Esp32Music::PlayAudioStream() {
         if (sync_offset > 0) {
             read_ptr += sync_offset;
             bytes_left -= sync_offset;
+        }
+
+        // 双同步验证：计算当前帧的预期字节长度，检查下一帧起始处是否也有有效同步字
+        // 目的：过滤掉 main_data 内部出现的假 0xFFEx 字节序列，避免触发 -1/-6 错误级联
+        // 仅在有足够数据（>= frame_size + 2）时才校验；数据不足时放行，由解码器处理
+        if (bytes_left >= 4) {
+            int fsize = CalcMp3FrameSize(read_ptr);
+            if (fsize > 0 && bytes_left > fsize + 1) {
+                uint8_t n0 = read_ptr[fsize];
+                uint8_t n1 = read_ptr[fsize + 1];
+                if (n0 != 0xFF || (n1 & 0xE0) != 0xE0) {
+                    // 下一帧位置没有合法同步字 → 当前是假同步，跳过
+                    ESP_LOGD(TAG, "False sync at offset, skipping (fsize=%d)", fsize);
+                    int next_sync = MP3FindSyncWord(read_ptr + 1, bytes_left - 1);
+                    if (next_sync >= 0) {
+                        read_ptr  += 1 + next_sync;
+                        bytes_left -= 1 + next_sync;
+                    } else {
+                        bytes_left = 0;
+                    }
+                    continue;
+                }
+            }
         }
 
         // 检测并跳过 Xing/LAME/Info VBR 信息帧（通常是ID3之后的第一帧）

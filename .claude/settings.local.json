@@ -7,7 +7,9 @@
       "Bash(gh api:*)",
       "Bash(\"d:/works/esp/v5.5/tools/tools/idf-python/3.11.9/python.exe\" \"d:/works/esp/v5.5/esp-idf/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py\" generate wifi_nvs.csv wifi_nvs.bin 0x4000)",
       "Bash(\"d:/works/esp/v5.5/tools/python_env/idf5.5_py3.11_env/Scripts/python.exe\" \"d:/works/esp/v5.5/esp-idf/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py\" generate wifi_nvs.csv wifi_nvs.bin 0x4000)",
-      "Bash(\"d:/works/esp/v5.5/tools/python_env/idf5.5_py3.11_env/Scripts/python.exe\" \"d:/works/esp/v5.5/esp-idf/components/esptool_py/esptool/esptool.py\" --chip esp32s3 --port COM5 --baud 460800 write_flash 0x9000 \"d:/works/esp/projects/xiaozhi-esp32/wifi_nvs.bin\")"
+      "Bash(\"d:/works/esp/v5.5/tools/python_env/idf5.5_py3.11_env/Scripts/python.exe\" \"d:/works/esp/v5.5/esp-idf/components/esptool_py/esptool/esptool.py\" --chip esp32s3 --port COM5 --baud 460800 write_flash 0x9000 \"d:/works/esp/projects/xiaozhi-esp32/wifi_nvs.bin\")",
+      "Bash(xargs grep:*)",
+      "Bash(find d:/works/esp/projects/xiaozhi-esp32/managed_components/78__esp-ml307/src/esp/ -name *.cc)"
     ]
   }
 }
