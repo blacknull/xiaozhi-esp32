@@ -87,6 +87,7 @@ void Application::Initialize() {
 
     // Add state change listeners
     state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
+        previous_device_state_ = old_state;
         xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
     });
 
@@ -869,24 +870,25 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 }
 
 void Application::HandleStateChangedEvent() {
-    DeviceState new_state = state_machine_.GetState();
+    DeviceState state = state_machine_.GetState();
+    DeviceState previous_state = previous_device_state_;
     clock_ticks_ = 0;
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
-    
+
     // 当从idle状态变成其他任何状态时，停止音乐播放
     if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
         auto music = board.GetMusic();
         if (music) {
-            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s", 
-                    STATE_STRINGS[previous_state], STATE_STRINGS[state]);
+            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s",
+                    state_machine_.GetStateName(previous_state), state_machine_.GetStateName(state));
             music->StopStreaming();
         }
     }
-    
+
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -1131,7 +1133,7 @@ void Application::SetAecMode(AecMode mode) {
 // 新增：接收外部音频数据（如音乐播放）
 void Application::AddAudioData(AudioStreamPacket&& packet) {
     auto codec = Board::GetInstance().GetAudioCodec();
-    if (device_state_ == kDeviceStateIdle && codec->output_enabled()) {
+    if (GetDeviceState() == kDeviceStateIdle && codec->output_enabled()) {
         // packet.payload包含的是原始PCM数据（int16_t）
         if (packet.payload.size() >= 2) {
             size_t num_samples = packet.payload.size() / sizeof(int16_t);
