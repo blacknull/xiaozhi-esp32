@@ -2,6 +2,9 @@
 
 #include <esp_log.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #define TAG "Protocol"
 
 void Protocol::OnIncomingJson(std::function<void(const cJSON* root)> callback) {
@@ -76,6 +79,19 @@ void Protocol::SendStopListening() {
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);
+}
+
+void Protocol::SendUserText(const std::string& text) {
+    // 方法1: 尝试使用 stt 消息（某些服务器支持）
+    std::string stt_message = "{\"session_id\":\"" + session_id_ + 
+                              "\",\"type\":\"stt\",\"text\":\"" + text + "\"}";
+    SendText(stt_message);
+    ESP_LOGI(TAG, "Sent stt message: %s", text.c_str());
+    
+    // 方法2: 停止监听，让服务器处理（某些服务器需要这个）
+    vTaskDelay(pdMS_TO_TICKS(100));
+    SendStopListening();
+    ESP_LOGI(TAG, "Sent listen stop to trigger processing");
 }
 
 bool Protocol::IsTimeout() const {

@@ -188,6 +188,9 @@ Esp32Music::Esp32Music() : last_downloaded_data_(), current_music_url_(), curren
 Esp32Music::~Esp32Music() {
     ESP_LOGI(TAG, "Destroying music player - stopping all operations");
     
+    // 停止播放检测定时器
+    StopPlaybackCheckTimer();
+    
     // 停止所有操作
     is_downloading_ = false;
     is_playing_ = false;
@@ -522,6 +525,15 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
 
     // 清空缓冲区
     ClearAudioBuffer();
+    
+    // 重置播放完成检测状态
+    was_playing_ = false;
+    normal_completion_ = false;
+    completion_triggered_ = false;
+    ESP_LOGI(TAG, "Playback completion detection reset");
+    
+    // 启动播放检测定时器
+    StartPlaybackCheckTimer();
 
     // 为每个线程分别设置 pthread 配置：将栈分配到 PSRAM 节省 SRAM
     is_downloading_ = true;
@@ -564,6 +576,16 @@ bool Esp32Music::StopStreaming() {
         ESP_LOGW(TAG, "No streaming in progress");
         return true;
     }
+    
+    // 标记为被打断（不是正常完成）
+    if (is_playing_) {
+        normal_completion_ = false;
+        completion_triggered_ = true;  // 防止触发完成回调
+        ESP_LOGI(TAG, "Playback interrupted by user, canceling review");
+    }
+    
+    // 停止播放检测定时器
+    StopPlaybackCheckTimer();
     
     // 停止下载和播放标志
     is_downloading_ = false;
@@ -707,23 +729,48 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
         }
         //*/
         
-        // 尝试检测文件格式（检查文件头）
-        if (total_downloaded == 0 && bytes_read >= 4) {
+        // 尝试检测文件格式（检查文件头）- 只在最开始检测
+        static bool format_checked = false;
+        if (!format_checked && bytes_read >= 16) {
+            format_checked = true;
+            ESP_LOGI(TAG, "===== AUDIO FORMAT CHECK (first chunk) =====");
+            ESP_LOGI(TAG, "First 16 bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                    (unsigned char)buffer[0], (unsigned char)buffer[1], 
+                    (unsigned char)buffer[2], (unsigned char)buffer[3],
+                    (unsigned char)buffer[4], (unsigned char)buffer[5],
+                    (unsigned char)buffer[6], (unsigned char)buffer[7],
+                    (unsigned char)buffer[8], (unsigned char)buffer[9],
+                    (unsigned char)buffer[10], (unsigned char)buffer[11],
+                    (unsigned char)buffer[12], (unsigned char)buffer[13],
+                    (unsigned char)buffer[14], (unsigned char)buffer[15]);
+            
+            // 检查ID3标签
+            size_t header_offset = 0;
             if (memcmp(buffer, "ID3", 3) == 0) {
-                ESP_LOGI(TAG, "Detected MP3 file with ID3 tag");
-            } else if (buffer[0] == 0xFF && (buffer[1] & 0xE0) == 0xE0) {
-                ESP_LOGI(TAG, "Detected MP3 file header");
-            } else if (memcmp(buffer, "RIFF", 4) == 0) {
-                ESP_LOGI(TAG, "Detected WAV file");
-            } else if (memcmp(buffer, "fLaC", 4) == 0) {
-                ESP_LOGI(TAG, "Detected FLAC file");
-            } else if (memcmp(buffer, "OggS", 4) == 0) {
-                ESP_LOGI(TAG, "Detected OGG file");
-            } else {
-                ESP_LOGI(TAG, "Unknown audio format, first 4 bytes: %02X %02X %02X %02X", 
-                        (unsigned char)buffer[0], (unsigned char)buffer[1], 
-                        (unsigned char)buffer[2], (unsigned char)buffer[3]);
+                uint32_t id3_size = ((uint32_t)(buffer[6] & 0x7F) << 21) |
+                                   ((uint32_t)(buffer[7] & 0x7F) << 14) |
+                                   ((uint32_t)(buffer[8] & 0x7F) << 7)  |
+                                   ((uint32_t)(buffer[9] & 0x7F));
+                header_offset = 10 + id3_size;
+                ESP_LOGI(TAG, "ID3v2 tag detected, size=%u bytes", (unsigned int)header_offset);
             }
+            
+            // 检测实际音频格式
+            uint8_t* audio_start = (uint8_t*)buffer + header_offset;
+            if (audio_start[0] == 0xFF && (audio_start[1] & 0xE0) == 0xE0) {
+                ESP_LOGI(TAG, "Format: VALID MP3");
+            } else if (memcmp(audio_start, "RIFF", 4) == 0) {
+                ESP_LOGI(TAG, "Format: WAV (NOT MP3!)");
+            } else if (memcmp(audio_start, "fLaC", 4) == 0) {
+                ESP_LOGI(TAG, "Format: FLAC (NOT MP3!)");
+            } else if (memcmp(audio_start, "OggS", 4) == 0) {
+                ESP_LOGI(TAG, "Format: OGG (NOT MP3!)");
+            } else if (audio_start[4] == 'f' && audio_start[5] == 't' && audio_start[6] == 'y' && audio_start[7] == 'p') {
+                ESP_LOGI(TAG, "Format: M4A/MP4 (NOT MP3!)");
+            } else {
+                ESP_LOGW(TAG, "Format: UNKNOWN or INVALID!");
+            }
+            ESP_LOGI(TAG, "============================================");
         }
         
         // 创建音频数据块
@@ -1216,6 +1263,10 @@ void Esp32Music::PlayAudioStream() {
     ESP_LOGI(TAG, "Audio stream playback finished, total played: %d bytes", total_played);
     ESP_LOGI(TAG, "Performing basic cleanup from play thread");
     
+    // 标记为正常播放完成（不是被用户打断）
+    normal_completion_ = true;
+    ESP_LOGI(TAG, "Playback completed normally, will trigger review");
+    
     // 停止播放标志
     is_playing_ = false;
     
@@ -1669,4 +1720,95 @@ void Esp32Music::SetDisplayMode(DisplayMode mode) {
     ESP_LOGI(TAG, "Display mode changed from %s to %s", 
             (old_mode == DISPLAY_MODE_SPECTRUM) ? "SPECTRUM" : "LYRICS",
             (mode == DISPLAY_MODE_SPECTRUM) ? "SPECTRUM" : "LYRICS");
+}
+
+// ========== 播放完成检测定时器 ==========
+
+void Esp32Music::PlaybackCheckCallback(void* arg) {
+    Esp32Music* music = static_cast<Esp32Music*>(arg);
+    if (music) {
+        music->CheckPlaybackStatus();
+    }
+}
+
+void Esp32Music::StartPlaybackCheckTimer() {
+    // 如果定时器已存在，先删除
+    if (playback_check_timer_ != nullptr) {
+        esp_timer_stop(playback_check_timer_);
+        esp_timer_delete(playback_check_timer_);
+        playback_check_timer_ = nullptr;
+    }
+    
+    // 创建定时器参数
+    const esp_timer_create_args_t timer_args = {
+        .callback = &PlaybackCheckCallback,
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "music_check",
+        .skip_unhandled_events = false
+    };
+    
+    // 创建定时器
+    esp_err_t err = esp_timer_create(&timer_args, &playback_check_timer_);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create playback check timer: %d", err);
+        return;
+    }
+    
+    // 启动定时器，每3秒执行一次
+    err = esp_timer_start_periodic(playback_check_timer_, 3000000);  // 3秒 = 3,000,000微秒
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start playback check timer: %d", err);
+        esp_timer_delete(playback_check_timer_);
+        playback_check_timer_ = nullptr;
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Playback check timer started (3s interval)");
+}
+
+void Esp32Music::StopPlaybackCheckTimer() {
+    if (playback_check_timer_ != nullptr) {
+        esp_timer_stop(playback_check_timer_);
+        esp_timer_delete(playback_check_timer_);
+        playback_check_timer_ = nullptr;
+        ESP_LOGI(TAG, "Playback check timer stopped");
+    }
+}
+
+void Esp32Music::CheckPlaybackStatus() {
+    bool currently_playing = is_playing_.load();
+    bool was_playing_before = was_playing_.load();
+    bool completed_normally = normal_completion_.load();
+    bool already_triggered = completion_triggered_.load();
+    
+    // 更新 was_playing_ 状态
+    if (currently_playing && !was_playing_before) {
+        // 开始播放了
+        was_playing_ = true;
+        ESP_LOGI(TAG, "Playback started, monitoring...");
+    }
+    
+    // 检测播放完成（之前正在播放，现在停止了）
+    if (was_playing_before && !currently_playing) {
+        // 停止定时器
+        StopPlaybackCheckTimer();
+        
+        if (completed_normally && !already_triggered) {
+            // 正常播放完成，触发回调
+            completion_triggered_ = true;
+            ESP_LOGI(TAG, "Playback completed normally, triggering review callback");
+            
+            if (on_playback_complete_) {
+                std::string song_name = current_song_name_;
+                // 在主任务上下文中执行回调
+                on_playback_complete_(song_name);
+            }
+        } else {
+            ESP_LOGI(TAG, "Playback stopped (interrupted or already triggered), no review");
+        }
+        
+        // 重置状态
+        was_playing_ = false;
+    }
 }

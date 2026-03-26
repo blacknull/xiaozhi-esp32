@@ -8,12 +8,14 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <functional>
 
 #include "music.h"
 
 // MP3解码器支持
 extern "C" {
 #include "mp3dec.h"
+#include "esp_timer.h"
 }
 
 // 音频数据块结构
@@ -91,10 +93,27 @@ private:
     size_t SkipId3Tag(uint8_t* data, size_t size);
 
     int16_t* final_pcm_data_fft = nullptr;
+    
+    // 播放完成检测相关
+    esp_timer_handle_t playback_check_timer_ = nullptr;
+    std::atomic<bool> was_playing_{false};           // 之前是否正在播放
+    std::atomic<bool> normal_completion_{false};     // 是否正常完成
+    std::atomic<bool> completion_triggered_{false};  // 是否已经触发过完成回调
+    std::function<void(const std::string& song_name)> on_playback_complete_;  // 播放完成回调
+    
+    void StartPlaybackCheckTimer();
+    void StopPlaybackCheckTimer();
+    void CheckPlaybackStatus();  // 定时器回调
+    static void PlaybackCheckCallback(void* arg);
 
 public:
     Esp32Music();
     ~Esp32Music();
+    
+    // 设置播放完成回调
+    void SetPlaybackCompleteCallback(std::function<void(const std::string&)> callback) {
+        on_playback_complete_ = callback;
+    }
 
     void* operator new(size_t size);
     void operator delete(void *ptr) noexcept;

@@ -73,6 +73,9 @@ public:
     virtual void SendStopListening();
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
+    
+    // 新增：发送用户文本消息（用于非语音输入场景，如音乐播放完成后的AI对话）
+    virtual void SendUserText(const std::string& text);
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;

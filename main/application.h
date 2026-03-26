@@ -65,6 +65,9 @@ public:
     void AddAudioData(AudioStreamPacket&& packet);
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    
+    // 新增：发送文本消息给AI（模拟用户说话）
+    void SendTextToAI(const std::string& text);
 
 private:
     Application();
@@ -85,6 +88,9 @@ private:
     bool aborted_ = false;
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
+    
+    // 测试标志：系统启动后自动触发一次AI对话测试
+    bool ai_test_triggered_ = false;
 
     void OnWakeWordDetected();
     void CheckNewVersion(Ota& ota);

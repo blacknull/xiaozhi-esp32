@@ -462,6 +462,17 @@ void Application::Start() {
 
     protocol_->OnConnected([this]() {
         DismissAlert();
+        
+        // 连接成功后，触发AI测试（如果还未触发）
+        if (!ai_test_triggered_) {
+            ESP_LOGI(TAG, "Protocol connected, triggering AI test...");
+            // 触发打开音频通道（异步）
+            Schedule([this]() {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                ESP_LOGI(TAG, "Toggling chat state to open audio channel...");
+                ToggleChatState();
+            });
+        }
     });
 
     protocol_->OnNetworkError([this](const std::string& message) {
@@ -478,6 +489,26 @@ void Application::Start() {
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG, "Server sample rate %d does not match device output sample rate %d, resampling may cause distortion",
                 protocol_->server_sample_rate(), codec->output_sample_rate());
+        }
+        
+        // 音频通道打开后，如果还未触发AI测试，则发送测试消息
+        if (!ai_test_triggered_) {
+            ai_test_triggered_ = true;
+            ESP_LOGI(TAG, "Audio channel opened, sending AI test message...");
+            
+            Schedule([this]() {
+                // 等待状态稳定
+                vTaskDelay(pdMS_TO_TICKS(800));
+                
+                // 发送测试消息
+                std::string test_message = "你好，我是小智。系统已启动，请随便说几句话测试一下语音功能是否正常。";
+                ESP_LOGI(TAG, "Sending AI test: %s", test_message.c_str());
+                
+                if (protocol_) {
+                    protocol_->SendUserText(test_message);
+                    ESP_LOGI(TAG, "AI test message sent");
+                }
+            });
         }
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
@@ -846,6 +877,57 @@ void Application::SendMcpMessage(const std::string& payload) {
         if (protocol_) {
             protocol_->SendMcpMessage(payload);
         }
+    });
+}
+
+void Application::SendTextToAI(const std::string& text) {
+    Schedule([this, text]() {
+        if (!protocol_) {
+            ESP_LOGE(TAG, "Protocol not initialized, cannot send text to AI");
+            return;
+        }
+        
+        // 如果音频通道未打开，使用 ToggleChatState 打开
+        if (!protocol_->IsAudioChannelOpened()) {
+            ESP_LOGI(TAG, "Audio channel not open, using ToggleChatState to activate...");
+            ToggleChatState();
+            
+            // 等待通道建立（通过状态变化判断）
+            int retries = 50;  // 最多等待5秒
+            while (!protocol_->IsAudioChannelOpened() && retries > 0) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                retries--;
+            }
+            
+            if (!protocol_->IsAudioChannelOpened()) {
+                ESP_LOGE(TAG, "Timeout waiting for audio channel");
+                return;
+            }
+            ESP_LOGI(TAG, "Audio channel opened");
+        }
+        
+        // 确保在 listening 状态
+        if (device_state_ != kDeviceStateListening) {
+            ESP_LOGI(TAG, "Not in listening state, current: %s", STATE_STRINGS[device_state_]);
+            // 如果处于 speaking 状态，先等待
+            if (device_state_ == kDeviceStateSpeaking) {
+                ESP_LOGI(TAG, "Waiting for speaking to finish...");
+                int retries = 30;
+                while (device_state_ == kDeviceStateSpeaking && retries > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    retries--;
+                }
+            }
+            // 进入 listening 状态
+            if (device_state_ == kDeviceStateIdle) {
+                ToggleChatState();
+                vTaskDelay(pdMS_TO_TICKS(300));
+            }
+        }
+        
+        // 发送用户文本
+        ESP_LOGI(TAG, "Sending user text: %s", text.c_str());
+        protocol_->SendUserText(text);
     });
 }
 
