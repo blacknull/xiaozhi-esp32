@@ -49,6 +49,12 @@ void Display::SetMusicInfo(const char* song_name) {
     // Base no-op; LVGL subclasses override via LvglDisplay::SetMusicInfo
 }
 
+void Display::SetIcon(const char* icon) {
+}
+
+void Display::SetPreviewImage(const lv_img_dsc_t* image) {
+}
+
 void Display::ClearChatMessages() {
     // Default empty implementation, override in subclasses if needed
 }
