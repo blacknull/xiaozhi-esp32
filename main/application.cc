@@ -317,6 +317,22 @@ void Application::HandleActivationDoneEvent() {
     Schedule([this]() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+        // Wait for the success sound to finish, then trigger auto greeting
+        audio_service_.WaitForPlaybackQueueEmpty();
+        if (GetDeviceState() != kDeviceStateIdle || !protocol_) {
+            return;
+        }
+        SetDeviceState(kDeviceStateConnecting);
+        if (!protocol_->IsAudioChannelOpened()) {
+            if (!protocol_->OpenAudioChannel()) {
+                SetDeviceState(kDeviceStateIdle);
+                return;
+            }
+        }
+        // Send wake word detect to make AI greet proactively
+        protocol_->SendWakeWordDetected("你好");
+        play_popup_on_listening_ = false;
+        SetListeningMode(kListeningModeAutoStop);
     });
 }
 
