@@ -272,3 +272,15 @@ bool LvglDisplay::SnapshotToJpeg(std::string& jpeg_data, int quality) {
     return false;
 #endif
 }
+
+void LvglDisplay::SetMusicInfo(const char* song_name) {
+    DisplayLockGuard lock(this);
+    if (chat_message_label_ == nullptr) {
+        return;
+    }
+    if (song_name != nullptr && strlen(song_name) > 0) {
+        lv_label_set_text(chat_message_label_, song_name);
+    } else {
+        lv_label_set_text(chat_message_label_, "");
+    }
+}
