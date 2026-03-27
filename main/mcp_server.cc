@@ -16,6 +16,10 @@
 #include "oled_display.h"
 #include "board.h"
 #include "boards/common/esp32_music.h"
+#include "settings.h"
+#ifdef HAVE_LVGL
+#include "lvgl_theme.h"
+#endif
 
 #define TAG "MCP"
 
@@ -95,6 +99,7 @@ void McpServer::AddCommonTools() {
                 return false;
             });
     }
+#endif // HAVE_LVGL
 
     auto camera = board.GetCamera();
     if (camera) {

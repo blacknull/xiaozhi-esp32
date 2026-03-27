@@ -292,7 +292,9 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     current_song_name_ = song_name;
     
     // 第一步：请求stream_pcm接口获取音频信息
-    std::string base_url = "http://www.xiaozhishop.xyz:5005";
+    // 使用IP地址直连，避免DNS解析问题
+    // 原域名: www.xiaozhishop.xyz (39.172.86.62)
+    std::string base_url = "http://39.172.86.62:5005";
     std::string full_url = base_url + "/stream_pcm?song=" + url_encode(song_name) + "&artist=" + url_encode(artist_name);
     
     ESP_LOGI(TAG, "Request URL: %s", full_url.c_str());
@@ -304,6 +306,7 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     // 设置基本请求头
     http->SetHeader("User-Agent", "ESP32-Music-Player/1.0");
     http->SetHeader("Accept", "application/json");
+    http->SetHeader("Host", "www.xiaozhishop.xyz");  // 虚拟主机需要
     
     // 添加ESP32认证头
     add_auth_headers(http.get());

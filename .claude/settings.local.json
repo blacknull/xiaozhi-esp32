@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . -name CLAUDE.md -o -name .cursorrules -o -path ./.cursor/rules* -o -path ./.github/copilot*)",
+      "Bash(find . -name CLAUDE.md -o -name .cursorrules -o -name *.cursorrules)",
+      "Bash(grep -r \"auto.*greet\\\\|auto.*start\\\\|auto.*listening\\\\|greet\\\\|welcome\" /d/works/esp/projects/xiaozhi-esp32/.claude/worktrees/elated-kapitsa/main/*.cc --include=\"*.cc\" -i)",
+      "Bash(idf.py build:*)",
+      "Bash(where idf.py)",
+      "Read(//d/works/esp/Espressif/frameworks/esp-idf-v5.4/**)",
+      "Bash(cmd.exe /c \"where idf.py\")",
+      "Bash(cmd.exe /c \"idf.py build 2>&1\")",
+      "Bash(export IDF_PATH=\"D:/works/esp/v5.5/esp-idf\")",
+      "Bash(source \"$IDF_PATH/export.sh\")",
+      "Bash(export IDF_PATH=\"D:/Espressif/frameworks/esp-idf-v5.5\")",
+      "Bash(export IDF_TOOLS_PATH=\"D:/Espressif\")",
+      "Bash(export IDF_PYTHON_ENV_PATH=\"D:/Espressif/python_env/idf5.5_py3.11_env\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"Get-Content ''''c:\\\\Users\\\\blacknull\\\\.vscode\\\\extensions\\\\espressif.esp-idf-extension-2.0.2\\\\esp_idf.json'''' -ErrorAction SilentlyContinue\")",
+      "Bash(find c:Usersblacknull.vscodeextensionsespressif.esp-idf-extension-2.0.2 -name *.json -maxdepth 1)",
+      "Bash(\"D:\\\\works\\\\esp\\\\v5.5\\\\tools\\\\python_env\\\\idf5.5_py3.11_env\\\\Scripts\\\\python.exe\" -c \"import click; print\\(''click ok''\\)\")"
+    ]
+  }
+}

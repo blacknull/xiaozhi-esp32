@@ -87,6 +87,7 @@ void Application::Initialize() {
 
     // Add state change listeners
     state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
+        previous_state_ = old_state;
         xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
     });
 
@@ -317,6 +318,66 @@ void Application::HandleActivationDoneEvent() {
     Schedule([this]() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+
+        // Auto-greet: trigger AI to proactively greet the user after activation
+        // Delay 3 seconds to ensure audio pipeline is fully initialized
+        esp_timer_handle_t greet_timer = nullptr;
+        esp_timer_create_args_t timer_args = {
+            .callback = [](void* arg) {
+                auto* app = static_cast<Application*>(arg);
+                app->Schedule([app]() {
+                    if (app->GetDeviceState() != kDeviceStateIdle || !app->protocol_) {
+                        return;
+                    }
+
+                    app->SetDeviceState(kDeviceStateConnecting);
+                    app->Schedule([app]() {
+                        if (app->GetDeviceState() != kDeviceStateConnecting) {
+                            return;
+                        }
+
+                        if (!app->protocol_->IsAudioChannelOpened()) {
+                            if (!app->protocol_->OpenAudioChannel()) {
+                                app->SetDeviceState(kDeviceStateIdle);
+                                return;
+                            }
+                        }
+
+                        // Enter listening state first to initialize audio pipeline
+                        app->play_popup_on_listening_ = false;
+                        app->SetListeningMode(kListeningModeAutoStop);
+
+                        // Delay 5 seconds before sending greeting to ensure
+                        // audio pipeline is fully ready for TTS playback
+                        esp_timer_handle_t msg_timer = nullptr;
+                        esp_timer_create_args_t msg_args = {
+                            .callback = [](void* arg) {
+                                auto* a = static_cast<Application*>(arg);
+                                a->Schedule([a]() {
+                                    if (a->GetDeviceState() != kDeviceStateListening) {
+                                        return;
+                                    }
+                                    a->protocol_->SendWakeWordDetected("你好");
+                                    a->protocol_->SendStopListening();
+                                });
+                            },
+                            .arg = app,
+                            .dispatch_method = ESP_TIMER_TASK,
+                            .name = "greet_msg",
+                            .skip_unhandled_events = false,
+                        };
+                        esp_timer_create(&msg_args, &msg_timer);
+                        esp_timer_start_once(msg_timer, 5000000);  // 5 seconds
+                    });
+                });
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "auto_greet",
+            .skip_unhandled_events = false,
+        };
+        esp_timer_create(&timer_args, &greet_timer);
+        esp_timer_start_once(greet_timer, 3000000);  // 3 seconds in microseconds
     });
 }
 
@@ -396,7 +457,7 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
-    const int MAX_RETRY = 10;
+    const int MAX_RETRY = 3;
     int retry_count = 0;
     int retry_delay = 10; // Initial retry delay in seconds
 
@@ -496,7 +557,10 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+        auto state = GetDeviceState();
+        // Accept audio in speaking state, and also in listening state because
+        // TTS audio may arrive before the scheduled speaking state transition.
+        if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -853,24 +917,24 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 }
 
 void Application::HandleStateChangedEvent() {
-    DeviceState new_state = state_machine_.GetState();
+    DeviceState state = state_machine_.GetState();
     clock_ticks_ = 0;
 
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
-    
+
     // 当从idle状态变成其他任何状态时，停止音乐播放
-    if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
+    if (previous_state_ == kDeviceStateIdle && state != kDeviceStateIdle) {
         auto music = board.GetMusic();
         if (music) {
-            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s", 
-                    STATE_STRINGS[previous_state], STATE_STRINGS[state]);
+            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s",
+                    DeviceStateMachine::GetStateName(previous_state_), DeviceStateMachine::GetStateName(state));
             music->StopStreaming();
         }
     }
-    
+
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -889,14 +953,13 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
 
-            // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
                 // For auto mode, wait for playback queue to be empty before enabling voice processing
                 // This prevents audio truncation when STOP arrives late due to network jitter
                 if (listening_mode_ == kListeningModeAutoStop) {
                     audio_service_.WaitForPlaybackQueueEmpty();
                 }
-                
+
                 // Send the start listening command
                 protocol_->SendStartListening(listening_mode_);
                 audio_service_.EnableVoiceProcessing(true);
@@ -1115,7 +1178,7 @@ void Application::SetAecMode(AecMode mode) {
 // 新增：接收外部音频数据（如音乐播放）
 void Application::AddAudioData(AudioStreamPacket&& packet) {
     auto codec = Board::GetInstance().GetAudioCodec();
-    if (device_state_ == kDeviceStateIdle && codec->output_enabled()) {
+    if (GetDeviceState() == kDeviceStateIdle && codec->output_enabled()) {
         // packet.payload包含的是原始PCM数据（int16_t）
         if (packet.payload.size() >= 2) {
             size_t num_samples = packet.payload.size() / sizeof(int16_t);

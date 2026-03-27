@@ -39,6 +39,8 @@ public:
     virtual void SetIcon(const char* icon);
     virtual void SetPreviewImage(const lv_img_dsc_t* image);
     virtual void ClearChatMessages();
+    virtual void start() {}      // Start FFT spectrum visualization
+    virtual void stopFft() {}    // Stop FFT spectrum visualization
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);

@@ -82,10 +82,25 @@ private:
         ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &display_i2c_bus_));
     }
 
+    void I2cScan() {
+        ESP_LOGI(TAG, "Scanning I2C bus...");
+        for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+            if (i2c_master_probe(display_i2c_bus_, addr, 100) == ESP_OK) {
+                ESP_LOGI(TAG, "Found I2C device at address 0x%02X", addr);
+            }
+        }
+    }
+
     void InitializeSsd1306Display() {
+        // 首先扫描I2C总线，检查SSD1306是否存在
+        I2cScan();
+
+        // SSD1306 常见地址: 0x3C (60) 或 0x3D (61)
+        const uint8_t SSD1306_ADDR = 0x3C;
+        
         // SSD1306 config
         esp_lcd_panel_io_i2c_config_t io_config = {
-            .dev_addr = 0x3C,
+            .dev_addr = SSD1306_ADDR,
             .on_color_trans_done = nullptr,
             .user_ctx = nullptr,
             .control_phase_bytes = 1,
@@ -101,7 +116,7 @@ private:
 
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(display_i2c_bus_, &io_config, &panel_io_));
 
-        ESP_LOGI(TAG, "Install SSD1306 driver");
+        ESP_LOGI(TAG, "Install SSD1306 driver (addr=0x%02X)", SSD1306_ADDR);
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.reset_gpio_num = -1;
         panel_config.bits_per_pixel = 1;
@@ -122,11 +137,40 @@ private:
             return;
         }
 
+        // 关键修复: 设置对比度（亮度）
+        // 很多SSD1306模块默认对比度为0导致黑屏
+        ESP_LOGI(TAG, "Setting contrast to 0xCF (207)");
+        const uint8_t contrast_cmd = 0x81;  // Set Contrast Control
+        const uint8_t contrast_val = 0xCF;  // 亮度值 0-255, 0xCF是一个较好的默认值
+        esp_lcd_panel_io_tx_param(panel_io_, contrast_cmd, &contrast_val, 1);
+
+        // 额外: 确保显示开启命令发送
+        const uint8_t disp_on_cmd = 0xAF;  // Display ON
+        esp_lcd_panel_io_tx_param(panel_io_, disp_on_cmd, nullptr, 0);
+
+        // 设置电荷泵（某些模块需要）
+        const uint8_t charge_pump_cmd = 0x8D;
+        const uint8_t charge_pump_val = 0x14;  // Enable charge pump
+        esp_lcd_panel_io_tx_param(panel_io_, charge_pump_cmd, &charge_pump_val, 1);
+
         // Set the display to on
         ESP_LOGI(TAG, "Turning display on");
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
 
+        // 填充屏幕测试（全白），帮助确认屏幕是否工作
+        ESP_LOGI(TAG, "Display test: filling screen");
+        uint8_t* test_buffer = (uint8_t*)calloc(DISPLAY_WIDTH * DISPLAY_HEIGHT / 8, 1);
+        if (test_buffer) {
+            memset(test_buffer, 0xFF, DISPLAY_WIDTH * DISPLAY_HEIGHT / 8);  // 全白
+            esp_lcd_panel_draw_bitmap(panel_, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, test_buffer);
+            vTaskDelay(pdMS_TO_TICKS(200));  // 显示200ms
+            memset(test_buffer, 0x00, DISPLAY_WIDTH * DISPLAY_HEIGHT / 8);  // 全黑（清屏）
+            esp_lcd_panel_draw_bitmap(panel_, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, test_buffer);
+            free(test_buffer);
+        }
+
         display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        ESP_LOGI(TAG, "OledDisplay created successfully");
     }
 
     void InitializeButtons() {

@@ -240,6 +240,10 @@ esp_err_t Ota::CheckVersion() {
         ESP_LOGW(TAG, "No firmware section found!");
     }
 
+#ifdef CONFIG_DISABLE_OTA_UPGRADE
+    has_new_version_ = false;
+#endif //CONFIG_DISABLE_OTA_UPGRADE
+
     cJSON_Delete(root);
     return ESP_OK;
 }
