@@ -7,6 +7,7 @@
 #include "websocket_protocol.h"
 #include "assets/lang_config.h"
 #include "mcp_server.h"
+#include "system_time_manager.h"
 #include "assets.h"
 #include "settings.h"
 
@@ -261,6 +262,10 @@ void Application::Run() {
 
 void Application::HandleNetworkConnectedEvent() {
     ESP_LOGI(TAG, "Network connected");
+    
+    // Auto sync time from NTP servers
+    SystemTimeManager::GetInstance().SyncTimeAsync();
+    
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
