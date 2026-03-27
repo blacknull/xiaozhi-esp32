@@ -16,7 +16,9 @@
       "Bash(export IDF_PYTHON_ENV_PATH=\"D:/Espressif/python_env/idf5.5_py3.11_env\")",
       "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"Get-Content ''''c:\\\\Users\\\\blacknull\\\\.vscode\\\\extensions\\\\espressif.esp-idf-extension-2.0.2\\\\esp_idf.json'''' -ErrorAction SilentlyContinue\")",
       "Bash(find c:Usersblacknull.vscodeextensionsespressif.esp-idf-extension-2.0.2 -name *.json -maxdepth 1)",
-      "Bash(\"D:\\\\works\\\\esp\\\\v5.5\\\\tools\\\\python_env\\\\idf5.5_py3.11_env\\\\Scripts\\\\python.exe\" -c \"import click; print\\(''click ok''\\)\")"
+      "Bash(\"D:\\\\works\\\\esp\\\\v5.5\\\\tools\\\\python_env\\\\idf5.5_py3.11_env\\\\Scripts\\\\python.exe\" -c \"import click; print\\(''click ok''\\)\")",
+      "Bash(xargs grep:*)",
+      "Bash(ls D:worksespprojectsxiaozhi-esp32.claudeworktreeselated-kapitsamain/*.cc D:worksespprojectsxiaozhi-esp32.claudeworktreeselated-kapitsamain/*.h)"
     ]
   }
 }

@@ -16,6 +16,7 @@
 #include "oled_display.h"
 #include "board.h"
 #include "boards/common/esp32_music.h"
+#include "timer_manager.h"
 #include "settings.h"
 #ifdef HAVE_LVGL
 #include "lvgl_theme.h"
@@ -181,6 +182,9 @@ void McpServer::AddCommonTools() {
                  return "{\"success\": false, \"message\": \"设置显示模式失败\"}";
              });
      }
+
+    // Register timer tools
+    TimerManager::GetInstance().RegisterMcpTools(this);
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());

@@ -319,57 +319,12 @@ void Application::HandleActivationDoneEvent() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
 
-        // Auto-greet: trigger AI to proactively greet the user after activation
-        // Delay 3 seconds to ensure audio pipeline is fully initialized
+        // Auto-greet: delay 3 seconds then trigger AI greeting
         esp_timer_handle_t greet_timer = nullptr;
         esp_timer_create_args_t timer_args = {
             .callback = [](void* arg) {
                 auto* app = static_cast<Application*>(arg);
-                app->Schedule([app]() {
-                    if (app->GetDeviceState() != kDeviceStateIdle || !app->protocol_) {
-                        return;
-                    }
-
-                    app->SetDeviceState(kDeviceStateConnecting);
-                    app->Schedule([app]() {
-                        if (app->GetDeviceState() != kDeviceStateConnecting) {
-                            return;
-                        }
-
-                        if (!app->protocol_->IsAudioChannelOpened()) {
-                            if (!app->protocol_->OpenAudioChannel()) {
-                                app->SetDeviceState(kDeviceStateIdle);
-                                return;
-                            }
-                        }
-
-                        // Enter listening state first to initialize audio pipeline
-                        app->play_popup_on_listening_ = false;
-                        app->SetListeningMode(kListeningModeAutoStop);
-
-                        // Delay 5 seconds before sending greeting to ensure
-                        // audio pipeline is fully ready for TTS playback
-                        esp_timer_handle_t msg_timer = nullptr;
-                        esp_timer_create_args_t msg_args = {
-                            .callback = [](void* arg) {
-                                auto* a = static_cast<Application*>(arg);
-                                a->Schedule([a]() {
-                                    if (a->GetDeviceState() != kDeviceStateListening) {
-                                        return;
-                                    }
-                                    a->protocol_->SendWakeWordDetected("你好");
-                                    a->protocol_->SendStopListening();
-                                });
-                            },
-                            .arg = app,
-                            .dispatch_method = ESP_TIMER_TASK,
-                            .name = "greet_msg",
-                            .skip_unhandled_events = false,
-                        };
-                        esp_timer_create(&msg_args, &msg_timer);
-                        esp_timer_start_once(msg_timer, 5000000);  // 5 seconds
-                    });
-                });
+                app->TriggerAutoConversation("你好");
             },
             .arg = this,
             .dispatch_method = ESP_TIMER_TASK,
@@ -377,7 +332,7 @@ void Application::HandleActivationDoneEvent() {
             .skip_unhandled_events = false,
         };
         esp_timer_create(&timer_args, &greet_timer);
-        esp_timer_start_once(greet_timer, 3000000);  // 3 seconds in microseconds
+        esp_timer_start_once(greet_timer, 3000000);  // 3 seconds
     });
 }
 
@@ -1145,6 +1100,96 @@ void Application::SendMcpMessage(const std::string& payload) {
         if (protocol_) {
             protocol_->SendMcpMessage(payload);
         }
+    });
+}
+
+void Application::TriggerAutoConversation(const std::string& message) {
+    Schedule([this, message]() {
+        if (!protocol_) {
+            ESP_LOGW(TAG, "Cannot trigger auto conversation, no protocol");
+            return;
+        }
+
+        auto state = GetDeviceState();
+        ESP_LOGI(TAG, "TriggerAutoConversation in state: %s, msg: %s",
+                 DeviceStateMachine::GetStateName(state), message.c_str());
+
+        if (state == kDeviceStateSpeaking) {
+            // Interrupt current speech, then retry
+            ESP_LOGI(TAG, "Interrupting speech for auto conversation");
+            AbortSpeaking(kAbortReasonNone);
+            // Retry after a short delay to let state settle
+            std::string* msg = new std::string(message);
+            esp_timer_handle_t timer = nullptr;
+            esp_timer_create_args_t args = {
+                .callback = [](void* arg) {
+                    std::string* m = static_cast<std::string*>(arg);
+                    std::string msg_copy = *m;
+                    delete m;
+                    Application::GetInstance().TriggerAutoConversation(msg_copy);
+                },
+                .arg = msg,
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "auto_conv_retry",
+                .skip_unhandled_events = false,
+            };
+            esp_timer_create(&args, &timer);
+            esp_timer_start_once(timer, 500000);  // 500ms retry
+            return;
+        }
+
+        if (state == kDeviceStateListening) {
+            // Already listening with audio channel open, send message directly
+            ESP_LOGI(TAG, "Already listening, sending message directly");
+            protocol_->SendWakeWordDetected(message);
+            protocol_->SendStopListening();
+            return;
+        }
+
+        if (state != kDeviceStateIdle) {
+            ESP_LOGW(TAG, "Cannot trigger auto conversation in state: %s",
+                     DeviceStateMachine::GetStateName(state));
+            return;
+        }
+
+        // Idle state: open audio channel and send message
+        SetDeviceState(kDeviceStateConnecting);
+        Schedule([this, message]() {
+            if (GetDeviceState() != kDeviceStateConnecting) return;
+
+            if (!protocol_->IsAudioChannelOpened()) {
+                if (!protocol_->OpenAudioChannel()) {
+                    SetDeviceState(kDeviceStateIdle);
+                    return;
+                }
+            }
+
+            play_popup_on_listening_ = false;
+            SetListeningMode(kListeningModeAutoStop);
+
+            // Delay to let audio pipeline initialize before sending message
+            std::string* msg = new std::string(message);
+            esp_timer_handle_t timer = nullptr;
+            esp_timer_create_args_t args = {
+                .callback = [](void* arg) {
+                    std::string* m = static_cast<std::string*>(arg);
+                    std::string msg_copy = *m;
+                    delete m;
+                    Application::GetInstance().Schedule([msg_copy]() {
+                        auto& app = Application::GetInstance();
+                        if (app.GetDeviceState() != kDeviceStateListening) return;
+                        app.protocol_->SendWakeWordDetected(msg_copy);
+                        app.protocol_->SendStopListening();
+                    });
+                },
+                .arg = msg,
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "auto_conv",
+                .skip_unhandled_events = false,
+            };
+            esp_timer_create(&args, &timer);
+            esp_timer_start_once(timer, 2500000);  // 2.5 seconds
+        });
     });
 }
 
