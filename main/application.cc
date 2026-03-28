@@ -9,6 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "ntp_time_sync.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -463,16 +464,33 @@ void Application::Start() {
     protocol_->OnConnected([this]() {
         DismissAlert();
         
+        // 网络就绪后，自动同步时间（异步执行）
+        auto& ntp = NtpTimeSync::GetInstance();
+        ntp.Initialize();
+        ntp.SyncTimeAsync(8, [](bool success, const std::string& time_str) {
+            if (success) {
+                ESP_LOGI(TAG, "Auto time sync successful: %s", time_str.c_str());
+            } else {
+                ESP_LOGW(TAG, "Auto time sync failed");
+            }
+        });
+        
         // 连接成功后，触发AI测试（如果还未触发）
-        if (!ai_test_triggered_) {
-            ESP_LOGI(TAG, "Protocol connected, triggering AI test...");
-            // 触发打开音频通道（异步）
-            Schedule([this]() {
-                vTaskDelay(pdMS_TO_TICKS(500));
-                ESP_LOGI(TAG, "Toggling chat state to open audio channel...");
-                ToggleChatState();
-            });
+        // 使用互斥锁保护 ai_test_triggered_，防止竞态条件
+        {
+            std::lock_guard<std::mutex> lock(ai_test_mutex_);
+            if (ai_test_triggered_) {
+                return;
+            }
         }
+        
+        ESP_LOGI(TAG, "Protocol connected, scheduling AI test...");
+        // 触发打开音频通道（异步）
+        Schedule([this]() {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            ESP_LOGI(TAG, "Toggling chat state to open audio channel...");
+            ToggleChatState();
+        });
     });
 
     protocol_->OnNetworkError([this](const std::string& message) {
@@ -492,24 +510,60 @@ void Application::Start() {
         }
         
         // 音频通道打开后，如果还未触发AI测试，则发送测试消息
-        if (!ai_test_triggered_) {
+        // 使用互斥锁保护 ai_test_triggered_
+        {
+            std::lock_guard<std::mutex> lock(ai_test_mutex_);
+            if (ai_test_triggered_) {
+                return;
+            }
+            // 立即标记为已触发，防止重复执行
             ai_test_triggered_ = true;
-            ESP_LOGI(TAG, "Audio channel opened, sending AI test message...");
-            
-            Schedule([this]() {
-                // 等待状态稳定
-                vTaskDelay(pdMS_TO_TICKS(800));
-                
-                // 发送测试消息
-                std::string test_message = "你好，我是小智。系统已启动，请随便说几句话测试一下语音功能是否正常。";
-                ESP_LOGI(TAG, "Sending AI test: %s", test_message.c_str());
-                
-                if (protocol_) {
-                    protocol_->SendUserText(test_message);
-                    ESP_LOGI(TAG, "AI test message sent");
-                }
-            });
         }
+        
+        ESP_LOGI(TAG, "Audio channel opened, preparing to send AI test message...");
+        
+        // 标记自动聊天正在进行中
+        {
+            std::lock_guard<std::mutex> lock(ai_test_mutex_);
+            ai_test_active_ = true;
+        }
+        
+        Schedule([this]() {
+            // 步骤1: 确保处于 Listening 状态
+            // 如果不是，需要等待状态切换（ToggleChatState 会触发状态切换）
+            int retries = 50;  // 最多等待5秒
+            while (device_state_ != kDeviceStateListening && retries > 0) {
+                ESP_LOGI(TAG, "AI test: Waiting for Listening state, current: %s", 
+                         STATE_STRINGS[device_state_]);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                retries--;
+            }
+            
+            if (device_state_ != kDeviceStateListening) {
+                ESP_LOGW(TAG, "AI test: Timeout waiting for Listening state, aborting");
+                // 重置标志并关闭通道
+                {
+                    std::lock_guard<std::mutex> lock(ai_test_mutex_);
+                    ai_test_active_ = false;
+                }
+                protocol_->CloseAudioChannel();
+                return;
+            }
+            
+            ESP_LOGI(TAG, "AI test: In Listening state, sending auto chat message...");
+            
+            // 步骤2: 发送唤醒词检测消息，文本内容为定制的聊天信息
+            // 格式: {"session_id":"xxx","type":"listen","state":"detect","text":"定制聊天信息"}
+            std::string chat_message = "你好，聊两句？";
+            ESP_LOGI(TAG, "AI test: Sending wake word detect with text: %s", chat_message.c_str());
+            protocol_->SendWakeWordDetected(chat_message);
+            
+            // 步骤3: 发送 stop listening，通知服务器结束聆听并处理消息
+            ESP_LOGI(TAG, "AI test: Sending stop listening...");
+            protocol_->SendStopListening();
+            
+            ESP_LOGI(TAG, "AI test message sequence sent successfully, waiting for response...");
+        });
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveMode(true);
@@ -533,11 +587,26 @@ void Application::Start() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
-                    if (device_state_ == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
-                            SetDeviceState(kDeviceStateListening);
+                    // 检查是否是自动聊天模式
+                    bool is_ai_test = false;
+                    {
+                        std::lock_guard<std::mutex> lock(ai_test_mutex_);
+                        is_ai_test = ai_test_active_;
+                        ai_test_active_ = false;  // 重置标志
+                    }
+                    
+                    if (is_ai_test) {
+                        // 自动聊天模式：TTS 结束后关闭通道
+                        ESP_LOGI(TAG, "AI test: TTS finished, closing audio channel...");
+                        protocol_->CloseAudioChannel();
+                    } else {
+                        // 正常语音对话模式
+                        if (device_state_ == kDeviceStateSpeaking) {
+                            if (listening_mode_ == kListeningModeManualStop) {
+                                SetDeviceState(kDeviceStateIdle);
+                            } else {
+                                SetDeviceState(kDeviceStateListening);
+                            }
                         }
                     }
                 });

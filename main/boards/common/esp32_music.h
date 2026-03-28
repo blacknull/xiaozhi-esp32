@@ -95,16 +95,13 @@ private:
     int16_t* final_pcm_data_fft = nullptr;
     
     // 播放完成检测相关
-    esp_timer_handle_t playback_check_timer_ = nullptr;
     std::atomic<bool> was_playing_{false};           // 之前是否正在播放
     std::atomic<bool> normal_completion_{false};     // 是否正常完成
     std::atomic<bool> completion_triggered_{false};  // 是否已经触发过完成回调
     std::function<void(const std::string& song_name)> on_playback_complete_;  // 播放完成回调
     
-    void StartPlaybackCheckTimer();
-    void StopPlaybackCheckTimer();
-    void CheckPlaybackStatus();  // 定时器回调
-    static void PlaybackCheckCallback(void* arg);
+    // MP3 帧大小计算（用于双同步验证）
+    static int CalcMp3FrameSize(const uint8_t* hdr);
 
 public:
     Esp32Music();
@@ -114,10 +111,14 @@ public:
     void SetPlaybackCompleteCallback(std::function<void(const std::string&)> callback) {
         on_playback_complete_ = callback;
     }
-
+    
+    // 检查播放完成状态（由 TimerManager 定期调用）
+    bool CheckPlaybackCompleted(std::string& out_song_name);
+    
+    // 重载 new/delete 运算符，使用 PSRAM
     void* operator new(size_t size);
     void operator delete(void *ptr) noexcept;
-    
+
     virtual bool Download(const std::string& song_name, const std::string& artist_name) override;
   
     virtual std::string GetDownloadResult() override;

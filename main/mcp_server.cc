@@ -19,6 +19,7 @@
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
 #include "boards/common/esp32_music.h"
+#include "ntp_time_sync.h"
 
 #define TAG "MCP"
 
@@ -204,6 +205,68 @@ void McpServer::AddUserOnlyTools() {
                 app.Reboot();
             }).detach();
             return true;
+        });
+
+    // Time sync tools
+    AddUserOnlyTool("self.time.sync",
+        "Synchronize system time from NTP servers. Supports multiple NTP servers: pool.ntp.org, ntp.aliyun.com, ntp.tencent.com. "
+        "If one server fails, it will automatically try the next one.",
+        PropertyList({
+            Property("timezone_offset", kPropertyTypeInteger, 8, -12, 14),  // 默认东8区，范围UTC-12到UTC+14
+            Property("set_local_time", kPropertyTypeBoolean, true)  // 是否设置到本地系统时间
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& ntp = NtpTimeSync::GetInstance();
+            int tz_offset = properties["timezone_offset"].value<int>();
+            bool set_local = properties["set_local_time"].value<bool>();
+            
+            ESP_LOGI(TAG, "MCP: Syncing time with timezone UTC%+d", tz_offset);
+            
+            bool success = ntp.SyncTime(tz_offset);
+            std::string time_str = ntp.GetLocalTimeString();
+            
+            cJSON* result = cJSON_CreateObject();
+            cJSON_AddBoolToObject(result, "success", success);
+            cJSON_AddStringToObject(result, "current_time", time_str.c_str());
+            cJSON_AddNumberToObject(result, "timezone_offset", tz_offset);
+            cJSON_AddBoolToObject(result, "local_time_set", set_local);
+            
+            if (success) {
+                cJSON_AddStringToObject(result, "message", "Time synchronized successfully");
+            } else {
+                cJSON_AddStringToObject(result, "message", "Failed to synchronize time from all NTP servers");
+            }
+            
+            return result;
+        });
+    
+    AddUserOnlyTool("self.time.get",
+        "Get current system time. Returns the local time string, timestamp and timezone offset.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& ntp = NtpTimeSync::GetInstance();
+            
+            // 获取带时区的 ISO 格式时间
+            std::string iso_time = ntp.GetLocalTimeString("%Y-%m-%dT%H:%M:%S");
+            
+            // 获取时区偏移（小时）并格式化为字符串，如 "+08:00" 或 "-05:00"
+            int tz_offset = ntp.GetTimezoneOffset();
+            char tz_str[16];
+            if (tz_offset >= 0) {
+                snprintf(tz_str, sizeof(tz_str), "+%02d:00", tz_offset);
+            } else {
+                snprintf(tz_str, sizeof(tz_str), "-%02d:00", -tz_offset);
+            }
+            
+            cJSON* result = cJSON_CreateObject();
+            cJSON_AddStringToObject(result, "local_time", ntp.GetLocalTimeString().c_str());
+            cJSON_AddStringToObject(result, "iso_time", (iso_time + tz_str).c_str());
+            cJSON_AddNumberToObject(result, "timestamp", ntp.GetTimestamp());
+            cJSON_AddNumberToObject(result, "timezone_offset_hours", tz_offset);
+            cJSON_AddStringToObject(result, "timezone", tz_str);
+            cJSON_AddBoolToObject(result, "synced", ntp.IsTimeSynced());
+            
+            return result;
         });
 
     // Display control

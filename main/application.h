@@ -90,7 +90,9 @@ private:
     TaskHandle_t check_new_version_task_handle_ = nullptr;
     
     // 测试标志：系统启动后自动触发一次AI对话测试
+    std::mutex ai_test_mutex_;
     bool ai_test_triggered_ = false;
+    bool ai_test_active_ = false;  // 标记自动聊天是否正在进行中
 
     void OnWakeWordDetected();
     void CheckNewVersion(Ota& ota);
