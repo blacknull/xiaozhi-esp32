@@ -73,6 +73,11 @@ void Protocol::SendStopListening() {
     SendText(message);
 }
 
+void Protocol::SendSttText(const std::string& text) {
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"stt\",\"text\":\"" + text + "\"}";
+    SendText(message);
+}
+
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
     SendText(message);

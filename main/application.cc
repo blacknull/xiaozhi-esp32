@@ -8,6 +8,8 @@
 #include "assets/lang_config.h"
 #include "mcp_server.h"
 #include "system_time_manager.h"
+#include "timer_manager.h"
+#include "boards/common/esp32_music.h"
 #include "assets.h"
 #include "settings.h"
 
@@ -99,6 +101,19 @@ void Application::Initialize() {
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
+
+    // Create music playback check timer (3 seconds interval, infinite repeats)
+    auto& timer_manager = TimerManager::GetInstance();
+    timer_manager.CreateMusicCheckTimer(3000, [](std::string& song_name) -> bool {
+        auto& board = Board::GetInstance();
+        auto music = board.GetMusic();
+        if (music) {
+            auto* esp32_music = static_cast<Esp32Music*>(music);
+            return esp32_music->CheckPlaybackCompleted(song_name);
+        }
+        return false;
+    });
+    ESP_LOGI(TAG, "Music playback check timer created (3s interval)");
 
     // Set network event callback for UI updates and network state handling
     board.SetNetworkEventCallback([this](NetworkEvent event, const std::string& data) {
@@ -895,6 +910,18 @@ void Application::HandleStateChangedEvent() {
         }
     }
 
+    // Check if there's pending music to play after TTS finished (speaking -> any other state)
+    if (previous_state_ == kDeviceStateSpeaking && state != kDeviceStateSpeaking) {
+        auto music = board.GetMusic();
+        if (music) {
+            auto* esp32_music = static_cast<Esp32Music*>(music);
+            if (esp32_music->HasPendingPlayback()) {
+                ESP_LOGI(TAG, "TTS finished, starting pending music playback");
+                esp32_music->StartPendingPlayback();
+            }
+        }
+    }
+
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -1165,6 +1192,24 @@ void Application::TriggerAutoConversation(const std::string& message) {
             if (!protocol_->IsAudioChannelOpened()) {
                 if (!protocol_->OpenAudioChannel()) {
                     SetDeviceState(kDeviceStateIdle);
+                    // Connection failed, retry after delay (e.g. MQTT reconnecting)
+                    ESP_LOGW(TAG, "Audio channel open failed, will retry in 10s");
+                    std::string* msg = new std::string(message);
+                    esp_timer_handle_t timer = nullptr;
+                    esp_timer_create_args_t retry_args = {
+                        .callback = [](void* arg) {
+                            std::string* m = static_cast<std::string*>(arg);
+                            std::string msg_copy = *m;
+                            delete m;
+                            Application::GetInstance().TriggerAutoConversation(msg_copy);
+                        },
+                        .arg = msg,
+                        .dispatch_method = ESP_TIMER_TASK,
+                        .name = "auto_conv_reconnect",
+                        .skip_unhandled_events = false,
+                    };
+                    esp_timer_create(&retry_args, &timer);
+                    esp_timer_start_once(timer, 10000000);  // 10s retry
                     return;
                 }
             }
@@ -1193,7 +1238,7 @@ void Application::TriggerAutoConversation(const std::string& message) {
                 .skip_unhandled_events = false,
             };
             esp_timer_create(&args, &timer);
-            esp_timer_start_once(timer, 2500000);  // 2.5 seconds
+            esp_timer_start_once(timer, 1500000);  // 1.5 seconds
         });
     });
 }

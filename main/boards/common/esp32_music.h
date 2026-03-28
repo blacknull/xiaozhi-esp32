@@ -8,12 +8,14 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <functional>
 
 #include "music.h"
 
 // MP3解码器支持
 extern "C" {
 #include "mp3dec.h"
+#include "esp_timer.h"
 }
 
 // 音频数据块结构
@@ -56,13 +58,17 @@ private:
     int64_t last_frame_time_ms_;    // 上一帧的时间戳
     int total_frames_decoded_;      // 已解码的帧数
 
+    // 线程操作互斥锁，防止 StopStreaming/StartStreaming 并发 join 同一线程
+    std::mutex thread_ops_mutex_;
+
     // 音频缓冲区
     std::queue<AudioChunk> audio_buffer_;
     std::mutex buffer_mutex_;
     std::condition_variable buffer_cv_;
     size_t buffer_size_;
-    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;  // 256KB缓冲区（降低以减少brownout风险）
-    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;   // 32KB最小播放缓冲（降低以减少brownout风险）
+    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;    // 256KB缓冲区（降低以减少brownout风险）
+    static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;    // 32KB持续播放最小缓冲
+    static constexpr size_t INITIAL_BUFFER_SIZE = 128 * 1024; // 128KB初始启动缓冲（避免bit reservoir不足导致开头卡顿）
     
     // MP3解码器相关
     HMP3Decoder mp3_decoder_;
@@ -87,10 +93,34 @@ private:
     size_t SkipId3Tag(uint8_t* data, size_t size);
 
     int16_t* final_pcm_data_fft = nullptr;
+    
+    // 播放完成检测相关
+    std::atomic<bool> was_playing_{false};           // 之前是否正在播放
+    std::atomic<bool> normal_completion_{false};     // 是否正常完成
+    std::atomic<bool> completion_triggered_{false};  // 是否已经触发过完成回调
+    std::function<void(const std::string& song_name)> on_playback_complete_;  // 播放完成回调
+    
+    // MP3 帧大小计算（用于双同步验证）
+    static int CalcMp3FrameSize(const uint8_t* hdr);
+
+    // 待播放标志：Download() 设置，TTS 结束后由 Application 触发实际播放
+    std::atomic<bool> pending_playback_{false};
 
 public:
     Esp32Music();
     ~Esp32Music();
+    
+    // 设置播放完成回调
+    void SetPlaybackCompleteCallback(std::function<void(const std::string&)> callback) {
+        on_playback_complete_ = callback;
+    }
+    
+    // 检查播放完成状态（由 TimerManager 定期调用）
+    bool CheckPlaybackCompleted(std::string& out_song_name);
+    
+    // 重载 new/delete 运算符，使用 PSRAM
+    void* operator new(size_t size);
+    void operator delete(void *ptr) noexcept;
 
     virtual bool Download(const std::string& song_name, const std::string& artist_name) override;
   
@@ -106,6 +136,10 @@ public:
     // 显示模式控制方法
     void SetDisplayMode(DisplayMode mode);
     DisplayMode GetDisplayMode() const { return display_mode_.load(); }
+
+    // 启动待播放的音乐（TTS 结束后调用）
+    bool StartPendingPlayback();
+    bool HasPendingPlayback() const { return pending_playback_; }
 };
 
 #endif // ESP32_MUSIC_H

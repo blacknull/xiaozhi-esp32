@@ -44,6 +44,9 @@ void TimerManager::StartEspTimer(TimerConfig& config) {
 
     if (config.type == TimerConfig::kRelative) {
         esp_timer_start_once(config.timer_handle, config.interval_ms * 1000);
+    } else if (config.type == TimerConfig::kMusicCheck) {
+        // Music check timer: use interval_ms as periodic interval
+        esp_timer_start_once(config.timer_handle, config.interval_ms * 1000);
     } else {
         // Absolute: compute delay from now
         struct timeval tv;
@@ -64,6 +67,25 @@ void TimerManager::OnTimerFired(int timer_id) {
             [timer_id](const TimerConfig& t) { return t.id == timer_id; });
 
         if (it == timers_.end() || !it->active) return;
+
+        // Handle music check timer specially
+        if (it->type == TimerConfig::kMusicCheck) {
+            std::string song_name;
+            if (it->music_check_callback && it->music_check_callback(song_name)) {
+                // Music playback completed, trigger conversation
+                std::string message = "评价" + song_name;
+                ESP_LOGI(TAG, "Music playback completed: %s, triggering review", song_name.c_str());
+                TriggerAutoConversation(message);
+            }
+            
+            // Reschedule music check timer (infinite repeats)
+            if (it->timer_handle) {
+                esp_timer_delete(it->timer_handle);
+                it->timer_handle = nullptr;
+            }
+            StartEspTimer(*it);
+            return;
+        }
 
         ESP_LOGI(TAG, "Timer %d fired, message: %s", timer_id, it->message.c_str());
         TriggerAutoConversation(it->message);
@@ -148,6 +170,33 @@ int TimerManager::CreateAbsoluteTimer(const std::string& message, int64_t target
     return timers_.back().id;
 }
 
+int TimerManager::CreateMusicCheckTimer(int64_t interval_ms, std::function<bool(std::string&)> check_callback) {
+    if ((int)timers_.size() >= kMaxTimers) {
+        ESP_LOGE(TAG, "Max timer limit reached (%d)", kMaxTimers);
+        return -1;
+    }
+    if (interval_ms < 1000) {
+        ESP_LOGE(TAG, "Interval too short: %d ms", (int)interval_ms);
+        return -1;
+    }
+
+    TimerConfig config;
+    config.id = next_id_++;
+    config.message = "music_check";  // Special marker for music check timer
+    config.type = TimerConfig::kMusicCheck;
+    config.interval_ms = interval_ms;
+    config.repeat_total = -1;  // Infinite repeats
+    config.repeat_remaining = -1;
+    config.music_check_callback = check_callback;
+
+    timers_.push_back(std::move(config));
+    StartEspTimer(timers_.back());
+
+    ESP_LOGI(TAG, "Created music check timer %d: interval=%ds, infinite repeats",
+             timers_.back().id, (int)(interval_ms / 1000));
+    return timers_.back().id;
+}
+
 bool TimerManager::DeleteTimer(int id) {
     auto it = std::find_if(timers_.begin(), timers_.end(),
         [id](const TimerConfig& t) { return t.id == id; });
@@ -171,7 +220,10 @@ std::string TimerManager::ListTimers() {
         cJSON* obj = cJSON_CreateObject();
         cJSON_AddNumberToObject(obj, "id", t.id);
         cJSON_AddStringToObject(obj, "message", t.message.c_str());
-        cJSON_AddStringToObject(obj, "type", t.type == TimerConfig::kRelative ? "relative" : "absolute");
+        const char* type_str = "absolute";
+        if (t.type == TimerConfig::kRelative) type_str = "relative";
+        else if (t.type == TimerConfig::kMusicCheck) type_str = "music_check";
+        cJSON_AddStringToObject(obj, "type", type_str);
         cJSON_AddBoolToObject(obj, "active", t.active);
 
         if (t.type == TimerConfig::kRelative) {

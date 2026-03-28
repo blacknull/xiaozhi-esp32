@@ -4,6 +4,7 @@
 #include <esp_timer.h>
 #include <string>
 #include <vector>
+#include <functional>
 
 class McpServer;
 
@@ -11,7 +12,7 @@ struct TimerConfig {
     int id;
     std::string message;
 
-    enum Type { kRelative, kAbsolute };
+    enum Type { kRelative, kAbsolute, kMusicCheck };
     Type type;
 
     // For kRelative
@@ -21,6 +22,9 @@ struct TimerConfig {
 
     // For kAbsolute
     int64_t target_epoch_ms;
+
+    // For kMusicCheck - callback to check music playback status
+    std::function<bool(std::string&)> music_check_callback;
 
     // Runtime
     esp_timer_handle_t timer_handle = nullptr;
@@ -44,6 +48,10 @@ public:
 
     // Create an absolute timer (fires once at epoch ms). Returns timer ID or -1 on error.
     int CreateAbsoluteTimer(const std::string& message, int64_t target_epoch_ms);
+
+    // Create a music playback check timer. Returns timer ID or -1 on error.
+    // This timer fires periodically and checks if music playback has completed.
+    int CreateMusicCheckTimer(int64_t interval_ms, std::function<bool(std::string&)> check_callback);
 
     // Delete a timer by ID.
     bool DeleteTimer(int id);
