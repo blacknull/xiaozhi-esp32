@@ -1,4 +1,5 @@
 #include "ota.h"
+#include "ntp_time_sync.h"
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
@@ -190,18 +191,20 @@ bool Ota::CheckVersion() {
         cJSON *timezone_offset = cJSON_GetObjectItem(server_time, "timezone_offset");
         
         if (cJSON_IsNumber(timestamp)) {
-            // 设置系统时间
+            // 设置系统时间（timestamp 是 UTC 毫秒，系统时钟必须保持 UTC）
             struct timeval tv;
             double ts = timestamp->valuedouble;
-            
-            // 如果有时区偏移，计算本地时间
-            if (cJSON_IsNumber(timezone_offset)) {
-                ts += (timezone_offset->valueint * 60 * 1000); // 转换分钟为毫秒
-            }
-            
+
             tv.tv_sec = (time_t)(ts / 1000);  // 转换毫秒为秒
             tv.tv_usec = (suseconds_t)((long long)ts % 1000) * 1000;  // 剩余的毫秒转换为微秒
             settimeofday(&tv, NULL);
+
+            // 时区偏移仅用于设置 TZ 环境变量，不要加到系统时钟上
+            if (cJSON_IsNumber(timezone_offset)) {
+                int tz_hours = timezone_offset->valueint / 60;
+                NtpTimeSync::GetInstance().SetTimezone(tz_hours);
+            }
+
             has_server_time_ = true;
         }
     } else {

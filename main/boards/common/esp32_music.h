@@ -40,6 +40,8 @@ private:
     std::string current_music_url_;
     std::string current_song_name_;
     bool song_name_displayed_;
+    unsigned long expected_data_size_ = 0;   // 服务器提供的歌曲文件字节数
+    int expected_duration_sec_ = 0;          // 服务器提供的歌曲时长（秒）
     
     // 歌词相关
     std::string current_lyric_url_;
@@ -66,9 +68,9 @@ private:
     std::mutex buffer_mutex_;
     std::condition_variable buffer_cv_;
     size_t buffer_size_;
-    static constexpr size_t MAX_BUFFER_SIZE = 256 * 1024;    // 256KB缓冲区（降低以减少brownout风险）
+    static constexpr size_t MAX_BUFFER_SIZE = 512 * 1024;    // 512KB缓冲区（PSRAM充裕，加大以改善播放稳定性）
     static constexpr size_t MIN_BUFFER_SIZE = 32 * 1024;    // 32KB持续播放最小缓冲
-    static constexpr size_t INITIAL_BUFFER_SIZE = 128 * 1024; // 128KB初始启动缓冲（避免bit reservoir不足导致开头卡顿）
+    static constexpr size_t INITIAL_BUFFER_SIZE = 256 * 1024; // 256KB初始启动缓冲（避免bit reservoir不足导致开头卡顿）
     
     // MP3解码器相关
     HMP3Decoder mp3_decoder_;
@@ -93,6 +95,7 @@ private:
     size_t SkipId3Tag(uint8_t* data, size_t size);
 
     int16_t* final_pcm_data_fft = nullptr;
+    size_t fft_buffer_samples_ = 0;  // final_pcm_data_fft 分配的样本数
     
     // 播放完成检测相关
     std::atomic<bool> was_playing_{false};           // 之前是否正在播放
@@ -100,6 +103,9 @@ private:
     std::atomic<bool> completion_triggered_{false};  // 是否已经触发过完成回调
     std::function<void(const std::string& song_name)> on_playback_complete_;  // 播放完成回调
     
+    // 播放完成监控定时器 ID
+    std::atomic<uint32_t> music_monitor_timer_id_{0};
+
     // MP3 帧大小计算（用于双同步验证）
     static int CalcMp3FrameSize(const uint8_t* hdr);
 
@@ -114,6 +120,16 @@ public:
     
     // 检查播放完成状态（由 TimerManager 定期调用）
     bool CheckPlaybackCompleted(std::string& out_song_name);
+    
+    // 获取当前播放的歌曲名
+    std::string GetCurrentSongName() const { return current_song_name_; }
+    // 获取服务器提供的歌曲文件大小和时长
+    unsigned long GetExpectedDataSize() const { return expected_data_size_; }
+    int GetExpectedDurationSec() const { return expected_duration_sec_; }
+
+    // 播放完成监控定时器管理
+    void SetMonitorTimerId(uint32_t id) { music_monitor_timer_id_ = id; }
+    uint32_t GetMonitorTimerId() const { return music_monitor_timer_id_.load(); }
     
     // 重载 new/delete 运算符，使用 PSRAM
     void* operator new(size_t size);

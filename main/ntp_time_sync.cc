@@ -8,6 +8,14 @@
 
 #define TAG "NTP"
 
+// NTP 服务器列表
+const char* NTP_SERVERS[] = {
+    "pool.ntp.org",
+    "ntp.aliyun.com", 
+    "ntp.tencent.com",
+    nullptr
+};
+
 NtpTimeSync& NtpTimeSync::GetInstance() {
     static NtpTimeSync instance;
     return instance;
@@ -20,13 +28,17 @@ void NtpTimeSync::Initialize() {
     
     ESP_LOGI(TAG, "Initializing SNTP...");
     
-    // 设置默认时区（东8区）
-    SetTimezone(current_timezone_);
+    // 先设置默认时区（东8区）
+    // 使用 CST-8 表示东8区（北京时间）
+    // 注意：必须在任何 time() 调用前设置，否则后续 localtime 会出错
+    setenv("TZ", "CST-8", 1);
+    tzset();
+    ESP_LOGI(TAG, "Default timezone set to: CST-8 (东8区/北京时间)");
     
     initialized_ = true;
     time_synced_ = false;
     
-    ESP_LOGI(TAG, "SNTP initialized, timezone: UTC%+d", current_timezone_);
+    ESP_LOGI(TAG, "SNTP initialized");
 }
 
 bool NtpTimeSync::SyncTime(int timezone_offset_hours, int timeout_ms) {
@@ -34,10 +46,8 @@ bool NtpTimeSync::SyncTime(int timezone_offset_hours, int timeout_ms) {
         Initialize();
     }
     
-    // 更新时区
-    if (timezone_offset_hours != current_timezone_) {
-        SetTimezone(timezone_offset_hours);
-    }
+    // 保存目标时区
+    current_timezone_ = timezone_offset_hours;
     
     ESP_LOGI(TAG, "Starting time sync with timezone UTC%+d...", timezone_offset_hours);
     
@@ -60,9 +70,13 @@ bool NtpTimeSync::TrySyncFromServer(const char* server, int timezone_offset_hour
     // 停止之前的 SNTP（如果运行中）
     esp_sntp_stop();
     
-    // 配置 SNTP
+    // 配置 SNTP（使用 UTC，不设置时区，由本地 tzset 处理）
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, server);
+    
+    // SNTP 获取的是 UTC 时间，localtime 会使用 TZ 环境变量进行转换
+    SetTimezone(timezone_offset_hours);
+
     esp_sntp_init();
     
     // 等待同步完成
@@ -70,6 +84,20 @@ bool NtpTimeSync::TrySyncFromServer(const char* server, int timezone_offset_hour
     
     // 停止 SNTP
     esp_sntp_stop();
+    
+    // 同步完成后再次设置时区（某些情况下 SNTP 可能会重置时区）
+    if (result) {
+        SetTimezone(timezone_offset_hours);
+        
+        // 验证时间是否正确
+        time_t now = time(nullptr);
+        struct tm timeinfo;
+        localtime_r(&now, &timeinfo);
+        ESP_LOGI(TAG, "Time verified: %04d-%02d-%02d %02d:%02d:%02d (timezone: UTC%+d)",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+                 timezone_offset_hours);
+    }
     
     return result;
 }
@@ -147,16 +175,35 @@ void NtpTimeSync::SetTimezone(int timezone_offset_hours) {
     current_timezone_ = timezone_offset_hours;
     
     // 设置时区环境变量
-    // POSIX 时区格式："UTC-8" 表示东8区（注意符号相反）
+    // 使用标准 POSIX TZ 格式
+    // 东8区（北京时间）: "CST-8" 或 "UTC-8"
+    // 注意：ESP32/newlib 中，CST-8 表示 UTC+8（东8区）
     char tz_str[32];
-    if (timezone_offset_hours >= 0) {
+    
+    // 使用 CST（China Standard Time）格式，更标准
+    if (timezone_offset_hours == 8) {
+        // 东8区使用 CST-8
+        snprintf(tz_str, sizeof(tz_str), "CST-8");
+    } else if (timezone_offset_hours >= 0) {
+        // 其他东时区
         snprintf(tz_str, sizeof(tz_str), "UTC-%d", timezone_offset_hours);
     } else {
+        // 西时区
         snprintf(tz_str, sizeof(tz_str), "UTC+%d", -timezone_offset_hours);
     }
     
+    // 清除旧的 TZ 环境变量
+    unsetenv("TZ");
     setenv("TZ", tz_str, 1);
     tzset();
     
-    ESP_LOGI(TAG, "Timezone set to: %s (UTC%+d)", tz_str, timezone_offset_hours);
+    // 立即验证时区设置
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    
+    ESP_LOGI(TAG, "Timezone set to: %s (UTC%+d), current time: %04d-%02d-%02d %02d:%02d:%02d", 
+             tz_str, timezone_offset_hours,
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }

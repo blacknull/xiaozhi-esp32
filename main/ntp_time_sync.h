@@ -5,13 +5,8 @@
 #include <functional>
 #include <esp_sntp.h>
 
-// NTP 服务器列表
-static const char* NTP_SERVERS[] = {
-    "pool.ntp.org",
-    "ntp.aliyun.com", 
-    "ntp.tencent.com",
-    nullptr
-};
+// NTP 服务器列表（在 ntp_time_sync.cc 中定义）
+extern const char* NTP_SERVERS[];
 
 class NtpTimeSync {
 public:

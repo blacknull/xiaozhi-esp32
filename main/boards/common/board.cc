@@ -28,38 +28,7 @@ Board::Board() {
     music_ = new Esp32Music();
     ESP_LOGI(TAG, "Music player initialized for all boards");
     
-    // 设置播放完成回调，触发小智点评
-    if (music_) {
-        Esp32Music* esp_music = static_cast<Esp32Music*>(music_);
-        esp_music->SetPlaybackCompleteCallback([](const std::string& song_name) {
-            ESP_LOGI(TAG, "Music playback completed: %s, triggering AI review", song_name.c_str());
-            
-            // 获取 Application 实例
-            auto& app = Application::GetInstance();
-            
-            // 使用 Schedule 在主事件循环中执行，避免定时器上下文中执行复杂操作
-            app.Schedule([&app, song_name]() {
-                // 显示点评提示
-                auto display = Board::GetInstance().GetDisplay();
-                if (display) {
-                    std::string msg = "《" + song_name + "》播放完成";
-                    display->SetChatMessage("system", msg.c_str());
-                }
-                
-                // 构建点评请求 - 模拟用户说话触发AI
-                std::string review_prompt = "我刚刚听完了歌曲《" + song_name + 
-                    "》，请你简单点评一下这首音乐（2-3句话），然后询问我想听其他音乐还是随便聊聊。";
-                
-                ESP_LOGI(TAG, "Sending review prompt to AI: %s", review_prompt.c_str());
-                
-                // 发送文本消息给AI（会自动打开音频通道并发送 listen 消息）
-                app.SendTextToAI(review_prompt);
-                
-                ESP_LOGI(TAG, "AI review triggered for: %s", song_name.c_str());
-            });
-        });
-        ESP_LOGI(TAG, "Music playback completion callback registered");
-    }
+    // 注：音乐播放完成检测已改为使用定时器轮询方式，在 Application 中实现
 }
 
 Board::~Board() {

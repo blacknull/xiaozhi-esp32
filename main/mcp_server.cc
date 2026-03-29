@@ -20,6 +20,7 @@
 #include "lvgl_display.h"
 #include "boards/common/esp32_music.h"
 #include "ntp_time_sync.h"
+#include "timer_task_manager.h"
 
 #define TAG "MCP"
 
@@ -139,12 +140,40 @@ void McpServer::AddCommonTools() {
              [music](const PropertyList& properties) -> ReturnValue {
                  auto song_name = properties["song_name"].value<std::string>();
                  auto artist_name = properties["artist_name"].value<std::string>();
-                 
+
                  if (!music->Download(song_name, artist_name)) {
                      return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
                  }
                  auto download_result = music->GetDownloadResult();
                  ESP_LOGI(TAG, "Music details result: %s", download_result.c_str());
+
+                 // 创建音乐播放完成监控定时器（3秒轮询，条件触发，触发后自动删除）
+                 auto* esp_music = dynamic_cast<Esp32Music*>(music);
+                 if (esp_music) {
+                     auto& timer_mgr = TimerTaskManager::GetInstance();
+
+                     // 删除旧的监控定时器（如上一首歌被打断，定时器仍在运行）
+                     uint32_t old_id = esp_music->GetMonitorTimerId();
+                     if (old_id != 0) {
+                         timer_mgr.DeleteTask(old_id);
+                         esp_music->SetMonitorTimerId(0);
+                     }
+
+                     std::string review_msg = "评论歌曲" + song_name;
+                     uint32_t new_id = timer_mgr.CreateRelativeTask(
+                         "音乐播放完成检测",
+                         3,       // 每3秒检查一次
+                         -1,      // 无限循环
+                         review_msg,
+                         [esp_music]() -> bool {
+                             std::string finished_song;
+                             return esp_music->CheckPlaybackCompleted(finished_song);
+                         },
+                         true     // 触发后自动删除
+                     );
+                     esp_music->SetMonitorTimerId(new_id);
+                 }
+
                  return "{\"success\": true, \"message\": \"音乐开始播放\"}";
              });
  
@@ -181,34 +210,165 @@ void McpServer::AddCommonTools() {
              });
      }
 
-    // Restore the original tools list to the end of the tools list
-    tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
-}
-
-void McpServer::AddUserOnlyTools() {
-    // System tools
-    AddUserOnlyTool("self.get_system_info",
-        "Get the system information",
-        PropertyList(),
-        [this](const PropertyList& properties) -> ReturnValue {
-            auto& board = Board::GetInstance();
-            return board.GetSystemInfoJson();
+    // Timer task tools (AI可见) - 放在常用工具列表中
+    AddTool("self.timer.create_relative",
+        "产生一个相对时间定时器（周期性）。在指定间隔后触发，并且可以重复多次。"
+        "当用户要求设置带有相对时间的定时器、闹钟或提醒时使用，例如 '提醒我5分钟后喝水', '每小时提醒我去休息一会', 等。"
+        "有带提醒，通知等词汇时，要发送的消息前部要以'提醒我'，'通知我'等词汇开头，后面跟上具体的提醒内容。"
+        "示例: '提醒我每小时去查一下天气' -> interval_seconds=3600, repeat_count=3, message='提醒我去查天气'",
+        PropertyList({
+            Property("name", kPropertyTypeString),                    // 任务名称
+            Property("interval_seconds", kPropertyTypeInteger, 1),    // 间隔秒数，至少1秒
+            Property("repeat_count", kPropertyTypeInteger, -1),       // 重复次数，-1表示无限，0或1表示只执行一次
+            Property("message", kPropertyTypeString)                  // 触发时发送给AI的消息
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& timer_manager = TimerTaskManager::GetInstance();
+            
+            std::string name = properties["name"].value<std::string>();
+            int interval = properties["interval_seconds"].value<int>();
+            int repeat = properties["repeat_count"].value<int>();
+            std::string message = properties["message"].value<std::string>();
+            
+            if (interval < 1) {
+                return std::string("Error: interval_seconds must be at least 1");
+            }
+            
+            // 转换repeat_count：如果为0或1，都表示只执行一次
+            if (repeat == 0) {
+                repeat = 1;
+            }
+            
+            uint32_t task_id = timer_manager.CreateRelativeTask(name, interval, repeat, message);
+            
+            cJSON* result = cJSON_CreateObject();
+            if (task_id != 0) {
+                cJSON_AddBoolToObject(result, "success", true);
+                cJSON_AddNumberToObject(result, "task_id", task_id);
+                cJSON_AddStringToObject(result, "name", name.c_str());
+                cJSON_AddNumberToObject(result, "interval_seconds", interval);
+                cJSON_AddNumberToObject(result, "repeat_count", repeat);
+                cJSON_AddStringToObject(result, "message", message.c_str());
+                
+                // 计算并显示人类可读的时间
+                int hours = interval / 3600;
+                int minutes = (interval % 3600) / 60;
+                int seconds = interval % 60;
+                char time_desc[64];
+                if (hours > 0) {
+                    snprintf(time_desc, sizeof(time_desc), "every %d hour(s)", hours);
+                } else if (minutes > 0) {
+                    snprintf(time_desc, sizeof(time_desc), "every %d minute(s)", minutes);
+                } else {
+                    snprintf(time_desc, sizeof(time_desc), "every %d second(s)", seconds);
+                }
+                cJSON_AddStringToObject(result, "interval_description", time_desc);
+                
+                if (repeat > 0) {
+                    cJSON_AddStringToObject(result, "schedule", 
+                        (std::string("Will trigger ") + time_desc + ", " + std::to_string(repeat) + " time(s) total").c_str());
+                } else {
+                    cJSON_AddStringToObject(result, "schedule", 
+                        (std::string("Will trigger ") + time_desc + " indefinitely").c_str());
+                }
+            } else {
+                cJSON_AddBoolToObject(result, "success", false);
+                cJSON_AddStringToObject(result, "error", "Failed to create timer task");
+            }
+            
+            return result;
         });
-
-    AddUserOnlyTool("self.reboot", "Reboot the system",
+    
+    AddTool("self.timer.create_absolute",
+        "生成一个绝对时间定时器（单次）。在特定时间戳触发。 "
+        "当用户要求设置带有绝对时间的定时器、闹钟或提醒时使用，例如 '下午三点', '明天上午10：30', 等。 "
+        "有带提醒，通知等词汇时，要发送的消息前部要以'提醒我'，'通知我'等词汇开头，后面跟上具体的提醒内容。"
+        "示例: '提醒我明天下午1：30分去学校' -> timestamp=明天下午1:30的Unix时间戳, message='提醒我去学校'",
+        PropertyList({
+            Property("name", kPropertyTypeString),           // 任务名称
+            Property("timestamp", kPropertyTypeInteger),     // Unix时间戳（秒）
+            Property("message", kPropertyTypeString)         // 触发时发送给AI的消息
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& timer_manager = TimerTaskManager::GetInstance();
+            
+            std::string name = properties["name"].value<std::string>();
+            int64_t timestamp = properties["timestamp"].value<int>();
+            std::string message = properties["message"].value<std::string>();
+            
+            if (timestamp <= 0) {
+                return std::string("Error: timestamp must be a positive integer");
+            }
+            
+            uint32_t task_id = timer_manager.CreateAbsoluteTask(name, timestamp, message);
+            
+            cJSON* result = cJSON_CreateObject();
+            if (task_id != 0) {
+                cJSON_AddBoolToObject(result, "success", true);
+                cJSON_AddNumberToObject(result, "task_id", task_id);
+                cJSON_AddStringToObject(result, "name", name.c_str());
+                cJSON_AddNumberToObject(result, "timestamp", timestamp);
+                cJSON_AddStringToObject(result, "message", message.c_str());
+                
+                // 转换时间戳为人类可读格式
+                time_t tt = timestamp;
+                struct tm* tm_info = localtime(&tt);
+                char time_str[64];
+                strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                cJSON_AddStringToObject(result, "trigger_time", time_str);
+            } else {
+                cJSON_AddBoolToObject(result, "success", false);
+                cJSON_AddStringToObject(result, "error", "Failed to create timer task (timestamp is in the past)");
+                
+                // 返回当前时间信息，帮助 AI 校准
+                auto& ntp = NtpTimeSync::GetInstance();
+                cJSON_AddNumberToObject(result, "current_timestamp", ntp.GetTimestamp());
+                cJSON_AddStringToObject(result, "current_time", ntp.GetLocalTimeString().c_str());
+                cJSON_AddNumberToObject(result, "requested_timestamp", timestamp);
+                cJSON_AddStringToObject(result, "hint", "The requested time is in the past. Please use self.time.get to get current time and calculate a future timestamp.");
+            }
+            
+            return result;
+        });
+    
+    AddTool("self.timer.list",
+        "List all active timer tasks. Use this when user asks about existing timers or reminders.",
         PropertyList(),
-        [this](const PropertyList& properties) -> ReturnValue {
-            std::thread([]() {
-                ESP_LOGW(TAG, "User requested reboot");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                auto& app = Application::GetInstance();
-                app.Reboot();
-            }).detach();
-            return true;
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& timer_manager = TimerTaskManager::GetInstance();
+            cJSON* tasks = timer_manager.GetAllTasksJson();
+            
+            cJSON* result = cJSON_CreateObject();
+            cJSON_AddBoolToObject(result, "success", true);
+            cJSON_AddItemToObject(result, "tasks", tasks);
+            cJSON_AddNumberToObject(result, "count", cJSON_GetArraySize(tasks));
+            
+            return result;
+        });
+    
+    AddTool("self.timer.delete",
+        "Delete a timer task by ID. Use this when user asks to cancel or remove a timer.",
+        PropertyList({
+            Property("task_id", kPropertyTypeInteger)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& timer_manager = TimerTaskManager::GetInstance();
+            int task_id = properties["task_id"].value<int>();
+            
+            bool success = timer_manager.DeleteTask(task_id);
+            
+            cJSON* result = cJSON_CreateObject();
+            cJSON_AddBoolToObject(result, "success", success);
+            cJSON_AddNumberToObject(result, "task_id", task_id);
+            if (!success) {
+                cJSON_AddStringToObject(result, "error", "Task not found or already deleted");
+            }
+            
+            return result;
         });
 
     // Time sync tools
-    AddUserOnlyTool("self.time.sync",
+    AddTool("self.time.sync",
         "Synchronize system time from NTP servers. Supports multiple NTP servers: pool.ntp.org, ntp.aliyun.com, ntp.tencent.com. "
         "If one server fails, it will automatically try the next one.",
         PropertyList({
@@ -240,7 +400,7 @@ void McpServer::AddUserOnlyTools() {
             return result;
         });
     
-    AddUserOnlyTool("self.time.get",
+    AddTool("self.time.get",
         "Get current system time. Returns the local time string, timestamp and timezone offset.",
         PropertyList(),
         [](const PropertyList& properties) -> ReturnValue {
@@ -268,6 +428,33 @@ void McpServer::AddUserOnlyTools() {
             
             return result;
         });
+    
+    // Restore the original tools list to the end of the tools list
+    tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
+}
+
+void McpServer::AddUserOnlyTools() {
+    // System tools
+    AddUserOnlyTool("self.get_system_info",
+        "Get the system information",
+        PropertyList(),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& board = Board::GetInstance();
+            return board.GetSystemInfoJson();
+        });
+
+    AddTool("self.reboot", "Reboot the device / 重启设备",
+        PropertyList(),
+        [this](const PropertyList& properties) -> ReturnValue {
+            std::thread([]() {
+                ESP_LOGW(TAG, "Reboot requested");
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                auto& app = Application::GetInstance();
+                app.Reboot();
+            }).detach();
+            return true;
+        });
+
 
     // Display control
 #ifdef HAVE_LVGL

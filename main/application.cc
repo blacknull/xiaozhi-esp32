@@ -10,6 +10,7 @@
 #include "assets.h"
 #include "settings.h"
 #include "ntp_time_sync.h"
+#include "timer_task_manager.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -451,7 +452,41 @@ void Application::Start() {
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
-
+    
+    // Initialize timer task manager and set callback
+    auto& timer_manager = TimerTaskManager::GetInstance();
+    timer_manager.Initialize();
+    timer_manager.SetOnTaskTriggered([this](const TimerTask& task) {
+        ESP_LOGI(TAG, "Timer task triggered: ID=%u, name='%s', message='%s'", 
+                 task.id, task.name.c_str(), task.message.c_str());
+        
+        // 使用 Schedule 在主线程中异步处理，避免在定时器回调中阻塞
+        Schedule([this, task]() {
+            // 显示通知到屏幕（通过 Board 获取 display，避免引用失效）
+            auto disp = Board::GetInstance().GetDisplay();
+            if (disp) {
+                std::string notification = "⏰ " + task.name;
+                disp->ShowNotification(notification.c_str(), 5000);
+            }
+            
+            // 检查是否正在播放音乐，如果是则停止
+            auto& board = Board::GetInstance();
+            auto music = board.GetMusic();
+            if (music) {
+                // 检查音乐是否正在播放或下载中
+                if (music->IsDownloading() || music->GetBufferSize() > 0) {
+                    ESP_LOGI(TAG, "Timer: Music is playing, stopping it first");
+                    music->StopStreaming();
+                    // 等待音乐完全停止
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    ESP_LOGI(TAG, "Timer: Music stopped, now sending message to AI");
+                }
+            }
+            
+            SendTextToAI(task.message);
+        });
+    });
+    
     if (ota.HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota.HasWebsocketConfig()) {
@@ -465,9 +500,11 @@ void Application::Start() {
         DismissAlert();
         
         // 网络就绪后，自动同步时间（异步执行）
+        // 使用已保存的时区偏移（来自 OTA 服务器的 timezone_offset），避免硬编码覆盖
         auto& ntp = NtpTimeSync::GetInstance();
         ntp.Initialize();
-        ntp.SyncTimeAsync(8, [](bool success, const std::string& time_str) {
+        int tz = ntp.GetTimezoneOffset();  // 使用 OTA 已设置的时区，默认为8
+        ntp.SyncTimeAsync(tz, [](bool success, const std::string& time_str) {
             if (success) {
                 ESP_LOGI(TAG, "Auto time sync successful: %s", time_str.c_str());
             } else {
@@ -475,22 +512,6 @@ void Application::Start() {
             }
         });
         
-        // 连接成功后，触发AI测试（如果还未触发）
-        // 使用互斥锁保护 ai_test_triggered_，防止竞态条件
-        {
-            std::lock_guard<std::mutex> lock(ai_test_mutex_);
-            if (ai_test_triggered_) {
-                return;
-            }
-        }
-        
-        ESP_LOGI(TAG, "Protocol connected, scheduling AI test...");
-        // 触发打开音频通道（异步）
-        Schedule([this]() {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            ESP_LOGI(TAG, "Toggling chat state to open audio channel...");
-            ToggleChatState();
-        });
     });
 
     protocol_->OnNetworkError([this](const std::string& message) {
@@ -509,61 +530,6 @@ void Application::Start() {
                 protocol_->server_sample_rate(), codec->output_sample_rate());
         }
         
-        // 音频通道打开后，如果还未触发AI测试，则发送测试消息
-        // 使用互斥锁保护 ai_test_triggered_
-        {
-            std::lock_guard<std::mutex> lock(ai_test_mutex_);
-            if (ai_test_triggered_) {
-                return;
-            }
-            // 立即标记为已触发，防止重复执行
-            ai_test_triggered_ = true;
-        }
-        
-        ESP_LOGI(TAG, "Audio channel opened, preparing to send AI test message...");
-        
-        // 标记自动聊天正在进行中
-        {
-            std::lock_guard<std::mutex> lock(ai_test_mutex_);
-            ai_test_active_ = true;
-        }
-        
-        Schedule([this]() {
-            // 步骤1: 确保处于 Listening 状态
-            // 如果不是，需要等待状态切换（ToggleChatState 会触发状态切换）
-            int retries = 50;  // 最多等待5秒
-            while (device_state_ != kDeviceStateListening && retries > 0) {
-                ESP_LOGI(TAG, "AI test: Waiting for Listening state, current: %s", 
-                         STATE_STRINGS[device_state_]);
-                vTaskDelay(pdMS_TO_TICKS(100));
-                retries--;
-            }
-            
-            if (device_state_ != kDeviceStateListening) {
-                ESP_LOGW(TAG, "AI test: Timeout waiting for Listening state, aborting");
-                // 重置标志并关闭通道
-                {
-                    std::lock_guard<std::mutex> lock(ai_test_mutex_);
-                    ai_test_active_ = false;
-                }
-                protocol_->CloseAudioChannel();
-                return;
-            }
-            
-            ESP_LOGI(TAG, "AI test: In Listening state, sending auto chat message...");
-            
-            // 步骤2: 发送唤醒词检测消息，文本内容为定制的聊天信息
-            // 格式: {"session_id":"xxx","type":"listen","state":"detect","text":"定制聊天信息"}
-            std::string chat_message = "你好，聊两句？";
-            ESP_LOGI(TAG, "AI test: Sending wake word detect with text: %s", chat_message.c_str());
-            protocol_->SendWakeWordDetected(chat_message);
-            
-            // 步骤3: 发送 stop listening，通知服务器结束聆听并处理消息
-            ESP_LOGI(TAG, "AI test: Sending stop listening...");
-            protocol_->SendStopListening();
-            
-            ESP_LOGI(TAG, "AI test message sequence sent successfully, waiting for response...");
-        });
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveMode(true);
@@ -587,26 +553,11 @@ void Application::Start() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
-                    // 检查是否是自动聊天模式
-                    bool is_ai_test = false;
-                    {
-                        std::lock_guard<std::mutex> lock(ai_test_mutex_);
-                        is_ai_test = ai_test_active_;
-                        ai_test_active_ = false;  // 重置标志
-                    }
-                    
-                    if (is_ai_test) {
-                        // 自动聊天模式：TTS 结束后关闭通道
-                        ESP_LOGI(TAG, "AI test: TTS finished, closing audio channel...");
-                        protocol_->CloseAudioChannel();
-                    } else {
-                        // 正常语音对话模式
-                        if (device_state_ == kDeviceStateSpeaking) {
-                            if (listening_mode_ == kListeningModeManualStop) {
-                                SetDeviceState(kDeviceStateIdle);
-                            } else {
-                                SetDeviceState(kDeviceStateListening);
-                            }
+                    if (device_state_ == kDeviceStateSpeaking) {
+                        if (listening_mode_ == kListeningModeManualStop) {
+                            SetDeviceState(kDeviceStateIdle);
+                        } else {
+                            SetDeviceState(kDeviceStateListening);
                         }
                     }
                 });
@@ -950,54 +901,86 @@ void Application::SendMcpMessage(const std::string& payload) {
 }
 
 void Application::SendTextToAI(const std::string& text) {
-    Schedule([this, text]() {
-        if (!protocol_) {
+    // 在独立的 FreeRTOS 任务中执行，避免阻塞主事件循环
+    // 使用堆分配传递参数，因为任务创建是异步的
+    struct SendTextParams {
+        Application* app;
+        std::string text;
+    };
+    auto* params = new SendTextParams{this, text};
+
+    BaseType_t ret = xTaskCreate([](void* arg) {
+        auto* p = static_cast<SendTextParams*>(arg);
+        Application* app = p->app;
+        std::string text = std::move(p->text);
+        delete p;
+
+        ESP_LOGI(TAG, "SendTextToAI task started, text: %s", text.c_str());
+
+        // 使用 unique_lock 而非 lock_guard：
+        // vTaskDelete() 会直接杀死任务，不会调用 C++ 析构函数，
+        // lock_guard 的析构永远不会执行，导致互斥锁永远锁定。
+        // 必须在 vTaskDelete 之前手动 unlock。
+        std::unique_lock<std::mutex> lock(app->send_text_mutex_);
+
+        if (!app->protocol_) {
             ESP_LOGE(TAG, "Protocol not initialized, cannot send text to AI");
+            lock.unlock();
+            vTaskDelete(nullptr);
             return;
         }
-        
-        // 如果音频通道未打开，使用 ToggleChatState 打开
-        if (!protocol_->IsAudioChannelOpened()) {
-            ESP_LOGI(TAG, "Audio channel not open, using ToggleChatState to activate...");
-            ToggleChatState();
-            
-            // 等待通道建立（通过状态变化判断）
+
+        // 如果正在说话，等待说完（在独立任务中等待，不阻塞主循环）
+        if (app->device_state_ == kDeviceStateSpeaking) {
+            ESP_LOGI(TAG, "Waiting for speaking to finish...");
             int retries = 50;  // 最多等待5秒
-            while (!protocol_->IsAudioChannelOpened() && retries > 0) {
+            while (app->device_state_ == kDeviceStateSpeaking && retries > 0) {
                 vTaskDelay(pdMS_TO_TICKS(100));
                 retries--;
             }
-            
-            if (!protocol_->IsAudioChannelOpened()) {
-                ESP_LOGE(TAG, "Timeout waiting for audio channel");
+            if (app->device_state_ == kDeviceStateSpeaking) {
+                ESP_LOGW(TAG, "Timeout waiting for speaking to finish");
+                lock.unlock();
+                vTaskDelete(nullptr);
                 return;
             }
-            ESP_LOGI(TAG, "Audio channel opened");
         }
-        
-        // 确保在 listening 状态
-        if (device_state_ != kDeviceStateListening) {
-            ESP_LOGI(TAG, "Not in listening state, current: %s", STATE_STRINGS[device_state_]);
-            // 如果处于 speaking 状态，先等待
-            if (device_state_ == kDeviceStateSpeaking) {
-                ESP_LOGI(TAG, "Waiting for speaking to finish...");
-                int retries = 30;
-                while (device_state_ == kDeviceStateSpeaking && retries > 0) {
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    retries--;
-                }
+
+        // 打开音频通道
+        if (!app->protocol_->IsAudioChannelOpened()) {
+            ESP_LOGI(TAG, "Opening audio channel for SendTextToAI...");
+            app->Schedule([app]() {
+                app->SetDeviceState(kDeviceStateConnecting);
+            });
+            if (!app->protocol_->OpenAudioChannel()) {
+                ESP_LOGE(TAG, "Failed to open audio channel");
+                lock.unlock();
+                vTaskDelete(nullptr);
+                return;
             }
-            // 进入 listening 状态
-            if (device_state_ == kDeviceStateIdle) {
-                ToggleChatState();
-                vTaskDelay(pdMS_TO_TICKS(300));
-            }
+            ESP_LOGI(TAG, "Audio channel opened successfully");
         }
-        
+
+        // 通过 Schedule 在主循环中设置监听模式（确保线程安全）
+        app->Schedule([app]() {
+            app->SetListeningMode(app->aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
+        });
+
+        // 等待状态切换完成
+        vTaskDelay(pdMS_TO_TICKS(1500));
+
         // 发送用户文本
-        ESP_LOGI(TAG, "Sending user text: %s", text.c_str());
-        protocol_->SendUserText(text);
-    });
+        ESP_LOGI(TAG, "Sending user text to AI: %s", text.c_str());
+        app->protocol_->SendWakeWordDetected(text);
+
+        lock.unlock();
+        vTaskDelete(nullptr);
+    }, "send_text_ai", 8192, params, 2, nullptr);
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create SendTextToAI task");
+        delete params;
+    }
 }
 
 void Application::SetAecMode(AecMode mode) {

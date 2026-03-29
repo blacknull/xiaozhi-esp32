@@ -81,15 +81,6 @@ void Protocol::SendMcpMessage(const std::string& payload) {
     SendText(message);
 }
 
-void Protocol::SendUserText(const std::string& text) {
-    // 发送 stt 消息（模拟语音识别结果）给服务器
-    // 注意：调用此函数前应先调用 SendStartListening，否则服务器可能不会处理
-    std::string stt_message = "{\"session_id\":\"" + session_id_ + 
-                              "\",\"type\":\"stt\",\"text\":\"" + text + "\"}";
-    SendText(stt_message);
-    ESP_LOGI(TAG, "Sent user text via stt: %s", text.c_str());
-}
-
 bool Protocol::IsTimeout() const {
     const int kTimeoutSeconds = 120;
     auto now = std::chrono::steady_clock::now();
