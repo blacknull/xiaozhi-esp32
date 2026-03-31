@@ -2,6 +2,8 @@
 #include <esp_log.h>
 #include <algorithm>
 #include <ctime>
+#include <freertos/idf_additions.h>
+#include <esp_heap_caps.h>
 
 #define TAG "TimerTask"
 
@@ -31,13 +33,14 @@ void TimerTaskManager::Initialize() {
     ESP_LOGI(TAG, "Initializing Timer Task Manager...");
     
     // 创建绝对时间检查任务
-    xTaskCreate(
+    xTaskCreateWithCaps(
         AbsoluteTaskCheckLoop,
         "timer_check",
         4096,
         this,
         5,
-        &check_task_handle_
+        &check_task_handle_,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
     
     initialized_ = true;

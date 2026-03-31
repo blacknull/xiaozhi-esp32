@@ -2,6 +2,8 @@
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/idf_additions.h>
+#include <esp_heap_caps.h>
 #include <esp_sntp.h>
 #include <time.h>
 #include <cstring>
@@ -131,7 +133,7 @@ void NtpTimeSync::SyncTimeAsync(int timezone_offset_hours,
     auto* params = new std::pair<int, std::function<void(bool, const std::string&)>>(
         timezone_offset_hours, callback);
     
-    xTaskCreate([](void* arg) {
+    xTaskCreateWithCaps([](void* arg) {
         auto* p = static_cast<std::pair<int, std::function<void(bool, const std::string&)>>*>(arg);
         int tz = p->first;
         auto cb = p->second;
@@ -145,8 +147,9 @@ void NtpTimeSync::SyncTimeAsync(int timezone_offset_hours,
             cb(success, time_str);
         }
         
-        vTaskDelete(nullptr);
-    }, "ntp_sync", 4096, params, 5, nullptr);
+        vTaskDeleteWithCaps(nullptr);
+    }, "ntp_sync", 4096, params, 5, nullptr,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
 std::string NtpTimeSync::GetLocalTimeString(const char* format) {

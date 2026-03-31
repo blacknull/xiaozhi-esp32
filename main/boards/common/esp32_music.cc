@@ -1086,50 +1086,52 @@ void Esp32Music::PlayAudioStream() {
             }
         }
         
-        // 如果需要更多MP3数据，从缓冲区读取
-        if (bytes_left < 4096) {  // 保持至少4KB数据用于解码
+        // 当解码缓冲区数据不足时，循环从队列拉取 chunk 尽量填满缓冲区（16KB）。
+        // 原来只拉一个 4KB chunk（且 space_available 硬编码 8192 导致只用了半个缓冲区），
+        // 在网络抖动时极易产生 underrun。改为：
+        //   1. 阈值提高到 8192，提前补充
+        //   2. 循环拉取直到缓冲区足够满或队列暂无数据
+        //   3. 等待改用 wait_for(50ms)，超时后用剩余数据继续解码而不阻塞
+        while (bytes_left < 8192) {
             AudioChunk chunk;
-            
-            // 从缓冲区获取音频数据
+            bool got_chunk = false;
+
             {
                 std::unique_lock<std::mutex> lock(buffer_mutex_);
-                if (audio_buffer_.empty()) {
-                    if (!is_downloading_) {
-                        // 下载完成且缓冲区为空，播放结束
+                if (!audio_buffer_.empty()) {
+                    chunk = audio_buffer_.front();
+                    audio_buffer_.pop();
+                    buffer_size_ -= chunk.size;
+                    buffer_cv_.notify_one();
+                    got_chunk = true;
+                } else if (!is_downloading_) {
+                    // 下载完成且队列为空，播放结束
+                    if (bytes_left == 0) {
                         ESP_LOGI(TAG, "Playback finished, total played: %d bytes", total_played);
-                        break;
+                        goto playback_done;
                     }
-                    // 等待新数据
-                    buffer_cv_.wait(lock, [this] { return !audio_buffer_.empty() || !is_downloading_; });
-                    if (audio_buffer_.empty()) {
-                        continue;
-                    }
+                    break;
+                } else {
+                    // 队列暂无数据，带超时等待，超时后先用剩余数据继续解码
+                    buffer_cv_.wait_for(lock, std::chrono::milliseconds(50),
+                        [this] { return !audio_buffer_.empty() || !is_downloading_; });
+                    if (audio_buffer_.empty()) break;
+                    continue;
                 }
-                
-                chunk = audio_buffer_.front();
-                audio_buffer_.pop();
-                buffer_size_ -= chunk.size;
-                
-                // 通知下载线程缓冲区有空间
-                buffer_cv_.notify_one();
             }
-            
-            // 将新数据添加到MP3输入缓冲区
-            if (chunk.data && chunk.size > 0) {
+
+            if (got_chunk && chunk.data && chunk.size > 0) {
                 // 移动剩余数据到缓冲区开头
                 if (bytes_left > 0 && read_ptr != mp3_input_buffer) {
                     memmove(mp3_input_buffer, read_ptr, bytes_left);
                 }
-                
-                // 检查缓冲区空间
-                size_t space_available = 8192 - bytes_left;
+                // 使用完整的 16384 字节缓冲区
+                size_t space_available = 16384 - bytes_left;
                 size_t copy_size = std::min(chunk.size, space_available);
-                
-                // 复制新数据
                 memcpy(mp3_input_buffer + bytes_left, chunk.data, copy_size);
                 bytes_left += copy_size;
                 read_ptr = mp3_input_buffer;
-                
+
                 // 检查并跳过ID3标签（仅在开始时处理一次）
                 if (!id3_processed && bytes_left >= 10) {
                     size_t id3_skip = SkipId3Tag(read_ptr, bytes_left);
@@ -1140,8 +1142,6 @@ void Esp32Music::PlayAudioStream() {
                     }
                     id3_processed = true;
                 }
-                
-                // 释放chunk内存
                 heap_caps_free(chunk.data);
             }
         }
@@ -1359,7 +1359,7 @@ void Esp32Music::PlayAudioStream() {
             }
         }
     }
-    
+    playback_done:
     // 清理
     if (pcm_buffer) {
         heap_caps_free(pcm_buffer);

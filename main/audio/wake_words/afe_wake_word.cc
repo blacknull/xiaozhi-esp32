@@ -3,6 +3,8 @@
 
 #include <esp_log.h>
 #include <sstream>
+#include <freertos/idf_additions.h>
+#include <esp_heap_caps.h>
 
 #define DETECTION_RUNNING_EVENT 1
 
@@ -81,11 +83,12 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
 
-    xTaskCreate([](void* arg) {
+    xTaskCreateWithCaps([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;
         this_->AudioDetectionTask();
-        vTaskDelete(NULL);
-    }, "audio_detection", 4096, this, 3, nullptr);
+        vTaskDeleteWithCaps(NULL);
+    }, "audio_detection", 4096, this, 3, nullptr,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     return true;
 }

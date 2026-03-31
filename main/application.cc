@@ -15,6 +15,7 @@
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
+#include <freertos/idf_additions.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
@@ -909,7 +910,7 @@ void Application::SendTextToAI(const std::string& text) {
     };
     auto* params = new SendTextParams{this, text};
 
-    BaseType_t ret = xTaskCreate([](void* arg) {
+    BaseType_t ret = xTaskCreateWithCaps([](void* arg) {
         auto* p = static_cast<SendTextParams*>(arg);
         Application* app = p->app;
         std::string text = std::move(p->text);
@@ -974,8 +975,9 @@ void Application::SendTextToAI(const std::string& text) {
         app->protocol_->SendWakeWordDetected(text);
 
         lock.unlock();
-        vTaskDelete(nullptr);
-    }, "send_text_ai", 8192, params, 2, nullptr);
+        vTaskDeleteWithCaps(nullptr);
+    }, "send_text_ai", 8192, params, 2, nullptr,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create SendTextToAI task");
