@@ -1,4 +1,5 @@
 #include "esp32_music.h"
+#include "http.h"
 #include "timer_task_manager.h"
 #include "board.h"
 #include "system_info.h"
@@ -241,6 +242,7 @@ Esp32Music::~Esp32Music() {
 }
 
 bool Esp32Music::Download(const std::string& song_name, const std::string& artist_name) {
+    is_radio_stream_ = false;  // 普通歌曲播放，不是直播流
     ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
     ESP_LOGI(TAG, "Starting to get music details for: %s", song_name.c_str());
 
@@ -505,6 +507,13 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
     return true;
 }
 
+// 播放网络电台直播流
+void Esp32Music::PlayRadio(const std::string& url) {
+    is_radio_stream_ = true;
+    ESP_LOGI(TAG, "Starting radio stream: %s", url.c_str());
+    StartStreaming(url);
+}
+
 // 停止流式播放
 bool Esp32Music::StopStreaming() {
     ESP_LOGI(TAG, "Stopping music streaming - current state: downloading=%d, playing=%d", 
@@ -519,6 +528,7 @@ bool Esp32Music::StopStreaming() {
 
     // 重置采样率到原始值
     ResetSampleRate();
+    is_radio_stream_ = false;
 
     // 检查是否有流式播放正在进行
     if (!is_playing_ && !is_downloading_) {
@@ -543,8 +553,10 @@ bool Esp32Music::StopStreaming() {
         std::lock_guard<std::mutex> lock(buffer_mutex_);
         buffer_cv_.notify_all();
     }
-    
-    // 等待线程结束（避免重复代码，让StopStreaming也能等待线程完全停止）
+
+    // 等待线程结束
+    // 说明：下载线程使用了 SetTimeout(3000)，Read() 超时后会自动返回 -1 并退出循环
+    // 无需强制关闭 HTTP 连接（强制关闭会产生 EspTcp 内部 race condition 导致崩溃）
     if (download_thread_.joinable()) {
         download_thread_.join();
         ESP_LOGI(TAG, "Download thread joined in StopStreaming");
@@ -672,6 +684,9 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
     // 一首30秒的128kbps MP3 ≈ 480KB，正常歌曲通常 > 1MB
     static const unsigned long MIN_MUSIC_FILE_SIZE = 512 * 1024;  // 512KB
 
+    // current_url 在重定向时会被更新为目标地址
+    std::string current_url = music_url;
+
     for (attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         if (!is_downloading_) break;  // 被外部停止
 
@@ -683,6 +698,9 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
 
         auto network = Board::GetInstance().GetNetwork();
         auto http = network->CreateHttp(0);
+        // 设置读取超时：正常下载中数据到达间隔远短于此值（64kbps ≈ 8KB/s，4KB 每 500ms）
+        // 若服务器停止发送（连接挂起），最多等待 3 秒后 Read() 返回 -1，保证 StopStreaming 能在合理时间完成 join
+        http->SetTimeout(3000);
 
         // 设置基本请求头
         http->SetHeader("User-Agent", "ESP32-Music-Player/1.0");
@@ -690,8 +708,8 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
         http->SetHeader("Accept-Encoding", "identity");  // 明确禁止内容编码
         http->SetHeader("Connection", "close");  // 尝试避免 chunked encoding
 
-        // 断点续传：如果之前已下载了部分数据，使用 Range 请求继续
-        if (total_downloaded > 0) {
+        // 断点续传：如果之前已下载了部分数据，使用 Range 请求继续（直播流不支持，跳过）
+        if (total_downloaded > 0 && !is_radio_stream_) {
             char range_header[64];
             snprintf(range_header, sizeof(range_header), "bytes=%lu-", total_downloaded);
             http->SetHeader("Range", range_header);
@@ -701,14 +719,41 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
         // 添加ESP32认证头
         add_auth_headers(http.get());
 
-        if (!http->Open("GET", music_url)) {
+        if (!http->Open("GET", current_url)) {
             ESP_LOGE(TAG, "Failed to connect to music stream URL");
             if (attempt < MAX_RETRIES) continue;
             is_downloading_ = false;
             return;
         }
 
+        // 跟随 HTTP 301/302/307/308 重定向（如 streamtheworld.com 等电台服务）
         int status_code = http->GetStatusCode();
+        static const int MAX_REDIRECTS = 5;
+        for (int redir = 0; redir < MAX_REDIRECTS &&
+             (status_code == 301 || status_code == 302 ||
+              status_code == 307 || status_code == 308); ++redir) {
+            std::string location = http->GetResponseHeader("location");
+            http->Close();
+            if (location.empty()) {
+                ESP_LOGE(TAG, "Redirect %d received but Location header is empty", status_code);
+                status_code = -1;
+                break;
+            }
+            ESP_LOGI(TAG, "Following redirect (%d) -> %s", status_code, location.c_str());
+            current_url = location;
+            http = network->CreateHttp(0);
+            http->SetTimeout(3000);
+            http->SetHeader("User-Agent", "ESP32-Music-Player/1.0");
+            http->SetHeader("Accept", "*/*");
+            http->SetHeader("Accept-Encoding", "identity");
+            if (!http->Open("GET", current_url)) {
+                ESP_LOGE(TAG, "Failed to connect after redirect");
+                status_code = -1;
+                break;
+            }
+            status_code = http->GetStatusCode();
+        }
+
         if (status_code != 200 && status_code != 206) {
             ESP_LOGE(TAG, "HTTP GET failed with status code: %d", status_code);
             http->Close();
@@ -788,42 +833,55 @@ void Esp32Music::DownloadAudioStream(const std::string& music_url) {
         while (is_downloading_) {
             int bytes_read = http->Read(buffer, read_chunk_size);
             if (bytes_read < 0) {
-                ESP_LOGE(TAG, "Read error %d (this_attempt=%lu, total=%lu)",
-                         bytes_read, bytes_this_attempt, total_downloaded);
+                if (!is_downloading_) {
+                    // 主动调用 Close() 中断阻塞 Read，属于预期行为
+                    ESP_LOGI(TAG, "HTTP read interrupted (stop requested)");
+                } else {
+                    ESP_LOGE(TAG, "Read error %d (this_attempt=%lu, total=%lu)",
+                             bytes_read, bytes_this_attempt, total_downloaded);
+                }
                 read_error = true;
                 break;
             }
             if (bytes_read == 0) {
-                // 连接关闭 — 判断是正常完成还是 chunked 解析错误导致的截断
-                bool likely_complete = false;
-
-                if (expected_content_length > 0) {
-                    // 有预期大小：对比实际下载量
-                    if (total_downloaded >= expected_content_length) {
-                        likely_complete = true;
-                    } else {
-                        ESP_LOGW(TAG, "Premature close: %lu/%lu bytes", total_downloaded, expected_content_length);
-                        read_error = true;
-                    }
-                } else if (is_chunked) {
-                    // chunked 响应无 Content-Length：用启发式判断
-                    // 如果下载量太少（< 512KB），很可能是 chunked 解析错误
-                    if (total_downloaded < MIN_MUSIC_FILE_SIZE) {
-                        ESP_LOGW(TAG, "Chunked response ended too early: %lu bytes (min expected %lu)",
-                                 total_downloaded, MIN_MUSIC_FILE_SIZE);
-                        read_error = true;
-                    } else {
-                        // 下载了足够多数据，认为可能完成了
-                        likely_complete = true;
-                    }
+                if (is_radio_stream_) {
+                    // 直播流：连接断开 -> 清缓冲、触发重连
+                    ESP_LOGI(TAG, "Radio stream disconnected after %lu bytes, will reconnect...", total_downloaded);
+                    ClearAudioBuffer();
+                    total_downloaded = 0;
+                    read_error = true;
                 } else {
-                    // 非 chunked 且无 Content-Length：信任 EOF
-                    likely_complete = true;
-                }
+                    // 文件下载：判断是正常完成还是 chunked 解析错误导致的截断
+                    bool likely_complete = false;
 
-                if (likely_complete) {
-                    ESP_LOGI(TAG, "Download completed: %lu bytes", total_downloaded);
-                    download_success = true;
+                    if (expected_content_length > 0) {
+                        // 有预期大小：对比实际下载量
+                        if (total_downloaded >= expected_content_length) {
+                            likely_complete = true;
+                        } else {
+                            ESP_LOGW(TAG, "Premature close: %lu/%lu bytes", total_downloaded, expected_content_length);
+                            read_error = true;
+                        }
+                    } else if (is_chunked) {
+                        // chunked 响应无 Content-Length：用启发式判断
+                        // 如果下载量太少（< 512KB），很可能是 chunked 解析错误
+                        if (total_downloaded < MIN_MUSIC_FILE_SIZE) {
+                            ESP_LOGW(TAG, "Chunked response ended too early: %lu bytes (min expected %lu)",
+                                     total_downloaded, MIN_MUSIC_FILE_SIZE);
+                            read_error = true;
+                        } else {
+                            // 下载了足够多数据，认为可能完成了
+                            likely_complete = true;
+                        }
+                    } else {
+                        // 非 chunked 且无 Content-Length：信任 EOF
+                        likely_complete = true;
+                    }
+
+                    if (likely_complete) {
+                        ESP_LOGI(TAG, "Download completed: %lu bytes", total_downloaded);
+                        download_success = true;
+                    }
                 }
                 break;
             }
@@ -992,11 +1050,13 @@ void Esp32Music::PlayAudioStream() {
     
     // 等待初始缓冲区填充后再开始播放，最多等待8秒
     // 目的：避免下载速度暂时慢于解码速度时 bit reservoir 不足导致开头卡顿和decode错误
+    // 直播流使用较小的初始缓冲阈值（256KB），减少开播延迟
     {
         std::unique_lock<std::mutex> lock(buffer_mutex_);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
-        bool reached = buffer_cv_.wait_until(lock, deadline, [this] {
-            return buffer_size_ >= INITIAL_BUFFER_SIZE
+        size_t initial_buf_threshold = is_radio_stream_ ? (256 * 1024) : INITIAL_BUFFER_SIZE;
+        bool reached = buffer_cv_.wait_until(lock, deadline, [this, initial_buf_threshold] {
+            return buffer_size_ >= initial_buf_threshold
                 || !is_downloading_   // 下载结束（含0字节情形）
                 || !is_playing_;      // 被 StopStreaming/StartStreaming 外部停止
         });
@@ -1043,7 +1103,11 @@ void Esp32Music::PlayAudioStream() {
     
     // 标记是否已经处理过ID3标签
     bool id3_processed = false;
-    
+    // 连续重置解码器但从未成功解码任何帧的次数
+    // 如果超过阈值，说明数据不是合法 MP3（或格式完全无法识别），放弃播放
+    int decoder_resets_without_frame = 0;
+    static constexpr int kMaxResetsWithoutFrame = 30;  // ~300ms内无任何成功帧则放弃
+
     while (is_playing_) {
         // 检查设备状态，只有在空闲状态才播放音乐
         auto& app = Application::GetInstance();
@@ -1146,10 +1210,35 @@ void Esp32Music::PlayAudioStream() {
             }
         }
         
+        // 缓冲区暂时为空（下载正在连接或重试中）
+        if (bytes_left == 0 && is_downloading_) {
+            // 直播流：启动重缓冲策略，等待缓冲区积累到足够数据后再恢复播放
+            // 避免下载速度与播放速度接近时频繁出现 underrun 导致卡顿
+            static constexpr size_t kRebufferResumeSize = 128 * 1024;  // 128KB再缓冲阈值
+            if (is_radio_stream_) {
+                ESP_LOGI(TAG, "Radio rebuffering: waiting for %d KB...", (int)(kRebufferResumeSize / 1024));
+                {
+                    std::unique_lock<std::mutex> lock(buffer_mutex_);
+                    buffer_cv_.wait_for(lock, std::chrono::seconds(30), [this] {
+                        return buffer_size_ >= kRebufferResumeSize || !is_downloading_ || !is_playing_;
+                    });
+                }
+                if (buffer_size_ >= kRebufferResumeSize) {
+                    ESP_LOGI(TAG, "Rebuffered to %d bytes, resuming playback", buffer_size_);
+                    // 重置解码器状态，避免跨断点的 bit reservoir 错误
+                    CleanupMp3Decoder();
+                    InitializeMp3Decoder();
+                }
+            }
+            continue;
+        }
+
         // 尝试找到MP3帧同步
         int sync_offset = MP3FindSyncWord(read_ptr, bytes_left);
         if (sync_offset < 0) {
-            ESP_LOGW(TAG, "No MP3 sync word found, skipping %d bytes", bytes_left);
+            if (bytes_left > 0) {
+                ESP_LOGW(TAG, "No MP3 sync word found, skipping %d bytes", bytes_left);
+            }
             bytes_left = 0;
             continue;
         }
@@ -1213,6 +1302,7 @@ void Esp32Music::PlayAudioStream() {
             // 解码成功，获取帧信息
             MP3GetLastFrameInfo(mp3_decoder_, &mp3_frame_info_);
             total_frames_decoded_++;
+            decoder_resets_without_frame = 0;  // 成功解码一帧，重置放弃计数器
             
             // 基本的帧信息有效性检查，防止除零错误
             if (mp3_frame_info_.samprate == 0 || mp3_frame_info_.nChans == 0) {
@@ -1238,6 +1328,14 @@ void Esp32Music::PlayAudioStream() {
             
             // 将PCM数据发送到Application的音频解码队列
             if (mp3_frame_info_.outputSamps > 0) {
+                // 直播流预热：前几帧只解码不输出，跳过流开头的垃圾数据
+                // 避免初始假同步帧的垃圾PCM造成"变声"，以及过早触发采样率切换
+                static constexpr int kRadioWarmupFrames = 5;
+                if (is_radio_stream_ && total_frames_decoded_ <= kRadioWarmupFrames) {
+                    ESP_LOGD(TAG, "Radio warmup: skipping frame %d/%d", total_frames_decoded_, kRadioWarmupFrames);
+                    continue;
+                }
+
                 int16_t* final_pcm_data = pcm_buffer;
                 int final_sample_count = mp3_frame_info_.outputSamps;
                 std::vector<int16_t> mono_buffer;
@@ -1344,6 +1442,19 @@ void Esp32Music::PlayAudioStream() {
                 InitializeMp3Decoder();
                 consecutive_errors = 0;
 
+                // 检测"从未成功解码任何帧但解码器已反复重置"的情形：
+                // 说明数据根本不是合法 MP3（如服务器返回错误页、加密格式等），放弃播放
+                if (total_frames_decoded_ == 0) {
+                    decoder_resets_without_frame++;
+                    if (decoder_resets_without_frame >= kMaxResetsWithoutFrame) {
+                        ESP_LOGE(TAG, "Aborting: %d decoder resets with 0 successful frames - "
+                                 "data is likely not valid MP3 (unsupported format or server error)",
+                                 decoder_resets_without_frame);
+                        is_playing_ = false;
+                        goto playback_done;
+                    }
+                }
+
                 // 跳到下一个有效sync word
                 if (bytes_left > 1) {
                     int next_sync = MP3FindSyncWord(read_ptr + 1, bytes_left - 1);
@@ -1396,8 +1507,12 @@ void Esp32Music::PlayAudioStream() {
         }
 
         if (genuinely_complete) {
-            normal_completion_ = true;
-            ESP_LOGI(TAG, "Playback completed normally, will trigger review");
+            if (!is_radio_stream_) {
+                normal_completion_ = true;
+                ESP_LOGI(TAG, "Playback completed normally, will trigger review");
+            } else {
+                ESP_LOGI(TAG, "Radio stream stopped");
+            }
         } else {
             ESP_LOGW(TAG, "Buffer exhausted but playback incomplete (download truncated)");
         }

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"EspUdp\\\\|Send failed\" D:worksespprojectsxiaozhi-esp32 --include=*.cc --include=*.c --include=*.h -l)"
+    ]
+  }
+}

@@ -54,6 +54,7 @@ private:
     std::atomic<DisplayMode> display_mode_;
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_downloading_;
+    std::atomic<bool> is_radio_stream_{false};  // 直播流模式（跳过Range续传和完成检测）
     std::thread play_thread_;
     std::thread download_thread_;
     int64_t current_play_time_ms_;  // 当前播放时间(毫秒)
@@ -142,6 +143,7 @@ public:
     // 新增方法
     virtual bool StartStreaming(const std::string& music_url) override;
     virtual bool StopStreaming() override;  // 停止流式播放
+    void PlayRadio(const std::string& url);  // 播放网络电台直播流
     virtual size_t GetBufferSize() const override { return buffer_size_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }

@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cctype>
+#include <unordered_map>
+#include "http.h"
 #include <esp_pthread.h>
 #include <esp_heap_caps.h>
 
@@ -34,6 +36,33 @@ McpServer::~McpServer() {
         delete tool;
     }
     tools_.clear();
+}
+
+// 从远程服务器获取电台列表JSON字符串，失败返回空字符串
+static std::string FetchRadioStationsJson() {
+    static const std::string kRadioListUrl = "http://120.77.77.180:8008/radio_station.json";
+    auto* network = Board::GetInstance().GetNetwork();
+    if (!network) {
+        ESP_LOGE(TAG, "Network not available for radio station fetch");
+        return "";
+    }
+    auto http = network->CreateHttp(0);
+    http->SetHeader("User-Agent", "ESP32-Radio/1.0");
+    http->SetHeader("Accept", "application/json");
+    http->SetTimeout(10000);  // 10秒超时
+    if (!http->Open("GET", kRadioListUrl)) {
+        ESP_LOGE(TAG, "Failed to connect to radio station list server");
+        return "";
+    }
+    int status = http->GetStatusCode();
+    if (status != 200) {
+        ESP_LOGE(TAG, "Radio station list HTTP error: %d", status);
+        http->Close();
+        return "";
+    }
+    std::string json = http->ReadAll();
+    http->Close();
+    return json;
 }
 
 void McpServer::AddCommonTools() {
@@ -159,7 +188,7 @@ void McpServer::AddCommonTools() {
                          esp_music->SetMonitorTimerId(0);
                      }
 
-                     std::string review_msg = "评论歌曲" + song_name;
+                     std::string review_msg = "评论" + song_name;
                      uint32_t new_id = timer_mgr.CreateRelativeTask(
                          "音乐播放完成检测",
                          3,       // 每3秒检查一次
@@ -208,6 +237,116 @@ void McpServer::AddCommonTools() {
                  
                  return "{\"success\": false, \"message\": \"设置显示模式失败\"}";
              });
+
+        AddTool("self.radio.station_list",
+            "查询网络电台列表。当用户询问有哪些电台、想收听广播、或按地区查找电台时使用此工具。\n"
+            "参数:\n"
+            "  location: 地区名称（可选），例如 '海南'、'江苏'。留空则返回全部电台。\n"
+            "返回:\n"
+            "  电台列表，包含名称(station)、地区(location)和简介(desc)。告知用户有哪些电台可以收听。",
+            PropertyList({
+                Property("location", kPropertyTypeString, "")  // 地区过滤（可选）
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                auto location = properties["location"].value<std::string>();
+
+                std::string json_str = FetchRadioStationsJson();
+                if (json_str.empty()) {
+                    return "{\"success\": false, \"message\": \"获取电台列表失败，请检查网络连接\"}";
+                }
+
+                cJSON* root = cJSON_Parse(json_str.c_str());
+                if (!root || !cJSON_IsArray(root)) {
+                    cJSON_Delete(root);
+                    return "{\"success\": false, \"message\": \"电台列表数据格式错误\"}";
+                }
+
+                cJSON* result = cJSON_CreateObject();
+                cJSON* stations_arr = cJSON_CreateArray();
+
+                int count = 0;
+                cJSON* item = nullptr;
+                cJSON_ArrayForEach(item, root) {
+                    cJSON* loc = cJSON_GetObjectItem(item, "location");
+                    // 按地区过滤（包含匹配）
+                    if (!location.empty() && cJSON_IsString(loc)) {
+                        if (std::string(loc->valuestring).find(location) == std::string::npos) {
+                            continue;
+                        }
+                    }
+                    cJSON* station_obj = cJSON_CreateObject();
+                    cJSON* station = cJSON_GetObjectItem(item, "station");
+                    cJSON* desc    = cJSON_GetObjectItem(item, "desc");
+                    if (cJSON_IsString(station)) cJSON_AddStringToObject(station_obj, "station",  station->valuestring);
+                    if (cJSON_IsString(loc))     cJSON_AddStringToObject(station_obj, "location", loc->valuestring);
+                    if (cJSON_IsString(desc))    cJSON_AddStringToObject(station_obj, "desc",     desc->valuestring);
+                    cJSON_AddItemToArray(stations_arr, station_obj);
+                    count++;
+                }
+
+                cJSON_AddBoolToObject(result, "success", true);
+                cJSON_AddNumberToObject(result, "count", count);
+                if (!location.empty()) cJSON_AddStringToObject(result, "filter_location", location.c_str());
+                cJSON_AddItemToObject(result, "stations", stations_arr);
+
+                char* result_str = cJSON_PrintUnformatted(result);
+                std::string ret(result_str);
+                cJSON_free(result_str);
+                cJSON_Delete(result);
+                cJSON_Delete(root);
+                return ret;
+            });
+
+        AddTool("self.radio.station_play",
+            "播放指定名称的网络电台直播流。先用 radio_station_list 查询电台列表，用户确认电台名后调用此工具播放。\n"
+            "参数:\n"
+            "  station_name: 电台名称，需与列表中 station 字段一致，例如 '海南交通台'。\n"
+            "返回:\n"
+            "  播放状态，成功后设备开始播放直播流。",
+            PropertyList({
+                Property("station_name", kPropertyTypeString)  // 电台名称（必需）
+            }),
+            [music](const PropertyList& properties) -> ReturnValue {
+                auto station_name = properties["station_name"].value<std::string>();
+
+                auto* esp_music = dynamic_cast<Esp32Music*>(music);
+                if (!esp_music) {
+                    return "{\"success\": false, \"message\": \"音乐功能不可用\"}";
+                }
+
+                std::string json_str = FetchRadioStationsJson();
+                if (json_str.empty()) {
+                    return "{\"success\": false, \"message\": \"获取电台列表失败，请检查网络连接\"}";
+                }
+
+                cJSON* root = cJSON_Parse(json_str.c_str());
+                if (!root || !cJSON_IsArray(root)) {
+                    cJSON_Delete(root);
+                    return "{\"success\": false, \"message\": \"电台列表数据格式错误\"}";
+                }
+
+                std::string play_link;
+                cJSON* item = nullptr;
+                cJSON_ArrayForEach(item, root) {
+                    cJSON* station = cJSON_GetObjectItem(item, "station");
+                    if (cJSON_IsString(station) && station_name == station->valuestring) {
+                        cJSON* link = cJSON_GetObjectItem(item, "play_link");
+                        if (cJSON_IsString(link)) {
+                            play_link = link->valuestring;
+                        }
+                        break;
+                    }
+                }
+                cJSON_Delete(root);
+
+                if (play_link.empty()) {
+                    return std::string("{\"success\": false, \"message\": \"未找到电台：") + station_name +
+                           "，请先调用 radio_station_list 查询可用电台\"}";
+                }
+
+                esp_music->PlayRadio(play_link);
+                return std::string("{\"success\": true, \"message\": \"开始播放") + station_name + "\"}";
+            });
      }
 
     // Timer task tools (AI可见) - 放在常用工具列表中
