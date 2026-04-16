@@ -188,6 +188,10 @@ public:
     virtual Display* GetDisplay() override {
         return display_;
     }
+
+    virtual i2c_master_bus_handle_t GetI2cBus() override {
+        return display_i2c_bus_;
+    }
 };
 
 DECLARE_BOARD(CompactWifiBoard);

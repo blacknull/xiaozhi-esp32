@@ -23,6 +23,7 @@
 #include "boards/common/esp32_music.h"
 #include "ntp_time_sync.h"
 #include "timer_task_manager.h"
+#include "servo/servo_controller.h"
 
 #define TAG "MCP"
 
@@ -38,31 +39,42 @@ McpServer::~McpServer() {
     tools_.clear();
 }
 
-// 从远程服务器获取电台列表JSON字符串，失败返回空字符串
-static std::string FetchRadioStationsJson() {
-    static const std::string kRadioListUrl = "http://120.77.77.180:8008/radio_station.json";
+// 通用 HTTP GET 获取 JSON 字符串，失败返回空字符串
+static std::string FetchJson(const std::string& url) {
     auto* network = Board::GetInstance().GetNetwork();
     if (!network) {
-        ESP_LOGE(TAG, "Network not available for radio station fetch");
+        ESP_LOGE(TAG, "Network not available for fetch: %s", url.c_str());
         return "";
     }
     auto http = network->CreateHttp(0);
-    http->SetHeader("User-Agent", "ESP32-Radio/1.0");
+    http->SetHeader("User-Agent", "ESP32/1.0");
     http->SetHeader("Accept", "application/json");
-    http->SetTimeout(10000);  // 10秒超时
-    if (!http->Open("GET", kRadioListUrl)) {
-        ESP_LOGE(TAG, "Failed to connect to radio station list server");
+    http->SetTimeout(10000);
+    if (!http->Open("GET", url)) {
+        ESP_LOGE(TAG, "Failed to connect: %s", url.c_str());
         return "";
     }
     int status = http->GetStatusCode();
     if (status != 200) {
-        ESP_LOGE(TAG, "Radio station list HTTP error: %d", status);
+        ESP_LOGE(TAG, "HTTP error %d for: %s", status, url.c_str());
         http->Close();
         return "";
     }
     std::string json = http->ReadAll();
     http->Close();
     return json;
+}
+
+// 从远程服务器获取电台列表JSON字符串，失败返回空字符串
+static std::string FetchRadioStationsJson() {
+    static const std::string kRadioListUrl = "http://120.77.77.180:8008/radio_station.json";
+    return FetchJson(kRadioListUrl);
+}
+
+// 从远程服务器获取舵机动作 JSON 字符串，失败返回空字符串
+static std::string FetchMovementJson() {
+    static const std::string kMovementJsonUrl = "http://120.77.77.180:8008/movement.json";
+    return FetchJson(kMovementJsonUrl);
 }
 
 void McpServer::AddCommonTools() {
@@ -568,6 +580,72 @@ void McpServer::AddCommonTools() {
             return result;
         });
     
+    // 舵机控制工具（仅在 Board 提供 I2C 总线时注册）
+    auto i2c_bus = board.GetI2cBus();
+    if (i2c_bus) {
+        auto& servo = ServoController::GetInstance();
+        if (servo.Initialize(i2c_bus)) {
+            AddTool("servo.list_movements",
+                "列出 movement.json 中所有可用的舵机动作名称。",
+                PropertyList(),
+                [](const PropertyList&) -> ReturnValue {
+                    std::string json_str = FetchMovementJson();
+                    if (json_str.empty()) {
+                        return std::string("{\"success\":false,\"message\":\"获取 movement.json 失败\"}");
+                    }
+                    auto names = ServoController::GetInstance().ListMovements(json_str);
+                    cJSON* arr = cJSON_CreateArray();
+                    for (auto& n : names) {
+                        cJSON_AddItemToArray(arr, cJSON_CreateString(n.c_str()));
+                    }
+                    return arr;
+                });
+
+            AddTool("servo.execute_movement",
+                "执行指定名称的舵机动作序列。先调用 servo.list_movements 获取可用动作名。",
+                PropertyList({
+                    Property("name", kPropertyTypeString),
+                    Property("times", kPropertyTypeInteger, 1)
+                }),
+                [](const PropertyList& props) -> ReturnValue {
+                    std::string name  = props["name"].value<std::string>();
+                    int times         = props["times"].value<int>();
+                    if (times < 1) times = 1;
+                    std::string json_str = FetchMovementJson();
+                    if (json_str.empty()) {
+                        return std::string("{\"success\":false,\"message\":\"获取 movement.json 失败\"}");
+                    }
+                    bool ok = ServoController::GetInstance().ExecuteMovement(json_str, name, times);
+                    return ok ? std::string("{\"success\":true}")
+                              : std::string("{\"success\":false,\"message\":\"动作执行失败或未找到动作\"}");
+                });
+
+            AddTool("servo.stop_all",
+                "立即停止所有正在运动的舵机。",
+                PropertyList(),
+                [](const PropertyList&) -> ReturnValue {
+                    int n = ServoController::GetInstance().StopAll();
+                    return std::string("{\"stopped\":") + std::to_string(n) + "}";
+                });
+
+            AddTool("servo.get_status",
+                "获取所有 16 个舵机通道的当前角度和旋转状态。",
+                PropertyList(),
+                [](const PropertyList&) -> ReturnValue {
+                    auto statuses = ServoController::GetInstance().GetStatus();
+                    cJSON* arr = cJSON_CreateArray();
+                    for (auto& s : statuses) {
+                        cJSON* obj = cJSON_CreateObject();
+                        cJSON_AddNumberToObject(obj, "channel",  s.channel);
+                        cJSON_AddNumberToObject(obj, "angle",    s.angle);
+                        cJSON_AddBoolToObject(obj,   "rotating", s.rotating);
+                        cJSON_AddItemToArray(arr, obj);
+                    }
+                    return arr;
+                });
+        }
+    }
+
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
 }

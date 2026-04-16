@@ -7,6 +7,7 @@
 #include <udp.h>
 #include <string>
 #include <network_interface.h>
+#include <driver/i2c_master.h>
 
 #include "led/led.h"
 #include "backlight.h"
@@ -58,6 +59,7 @@ public:
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
     virtual Assets* GetAssets();
+    virtual i2c_master_bus_handle_t GetI2cBus() { return nullptr; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \
