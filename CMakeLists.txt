@@ -18,6 +18,12 @@ add_compile_options(-DCONFIG_DISABLE_OTA_UPGRADE=1)
 # Uncomment to show user/assistant chat text on display during conversation (default: off)
 #add_compile_options(-DCONFIG_SHOW_CHAT_MSG=1)
 
+# Comment out to disable servo (PCA9685) control and related MCP tools
+#set(CONFIG_ENABLE_SERVO ON CACHE BOOL "Enable servo (PCA9685) control")
+if(CONFIG_ENABLE_SERVO)
+    add_compile_options(-DCONFIG_ENABLE_SERVO=1)
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 

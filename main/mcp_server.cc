@@ -23,7 +23,9 @@
 #include "boards/common/esp32_music.h"
 #include "ntp_time_sync.h"
 #include "timer_task_manager.h"
+#ifdef CONFIG_ENABLE_SERVO
 #include "servo/servo_controller.h"
+#endif
 
 #define TAG "MCP"
 
@@ -71,11 +73,13 @@ static std::string FetchRadioStationsJson() {
     return FetchJson(kRadioListUrl);
 }
 
+#ifdef CONFIG_ENABLE_SERVO
 // 从远程服务器获取舵机动作 JSON 字符串，失败返回空字符串
 static std::string FetchMovementJson() {
     static const std::string kMovementJsonUrl = "http://120.77.77.180:8008/movement.json";
     return FetchJson(kMovementJsonUrl);
 }
+#endif
 
 void McpServer::AddCommonTools() {
     // *Important* To speed up the response time, we add the common tools to the beginning of
@@ -580,6 +584,7 @@ void McpServer::AddCommonTools() {
             return result;
         });
     
+#ifdef CONFIG_ENABLE_SERVO
     // 舵机控制工具（仅在 Board 提供 I2C 总线时注册）
     auto i2c_bus = board.GetI2cBus();
     if (i2c_bus) {
@@ -645,6 +650,7 @@ void McpServer::AddCommonTools() {
                 });
         }
     }
+#endif // CONFIG_ENABLE_SERVO
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());

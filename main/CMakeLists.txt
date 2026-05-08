@@ -71,9 +71,12 @@ set(SOURCES "audio/audio_codec.cc"
             "device_manager.cc"
             "assets.cc"
             "main.cc"
-            "servo/pca9685.cc"
-            "servo/servo_controller.cc"
             )
+
+if(CONFIG_ENABLE_SERVO)
+    list(APPEND SOURCES "servo/pca9685.cc"
+                        "servo/servo_controller.cc")
+endif()
 
 set(INCLUDE_DIRS "." "display" "display/lvgl_display" "audio" "protocols")
 
