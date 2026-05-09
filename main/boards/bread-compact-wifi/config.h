@@ -62,6 +62,16 @@
 
 
 // A MCP Test: Control a lamp
-#define LAMP_GPIO GPIO_NUM_18
+#define LAMP_GPIO GPIO_NUM_47
+
+// Otto robot servo pins
+#define RIGHT_LEG_PIN GPIO_NUM_41
+#define RIGHT_FOOT_PIN GPIO_NUM_42
+
+#define LEFT_LEG_PIN GPIO_NUM_17
+#define LEFT_FOOT_PIN GPIO_NUM_18
+
+#define LEFT_HAND_PIN GPIO_NUM_8
+#define RIGHT_HAND_PIN GPIO_NUM_40
 
 #endif // _BOARD_CONFIG_H_

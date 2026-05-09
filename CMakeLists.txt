@@ -24,6 +24,12 @@ if(CONFIG_ENABLE_SERVO)
     add_compile_options(-DCONFIG_ENABLE_SERVO=1)
 endif()
 
+# Comment out to disable Otto robot servo control and related MCP tools
+#set(CONFIG_ENABLE_OTTO ON CACHE BOOL "Enable Otto robot servo control")
+if(CONFIG_ENABLE_OTTO)
+    add_compile_options(-DCONFIG_ENABLE_OTTO=1)
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 

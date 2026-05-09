@@ -78,7 +78,12 @@ if(CONFIG_ENABLE_SERVO)
                         "servo/servo_controller.cc")
 endif()
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "audio" "protocols")
+if(CONFIG_ENABLE_OTTO)
+    list(APPEND SOURCES "otto/oscillator.cc"
+                        "otto/otto_movements.cc")
+endif()
+
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "audio" "protocols" "otto")
 
 # Add board common files
 file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
@@ -93,6 +98,10 @@ set(LVGL_ICON_FONT ${FONT_AWESOME_14_1})
 # Set default assets if the board uses partition table V2
 if(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI)
     set(BOARD_TYPE "bread-compact-wifi")
+    set(LVGL_TEXT_FONT ${FONT_PUHUI_COMMON_14_1})
+    set(LVGL_ICON_FONT ${FONT_AWESOME_14_1})
+elseif(CONFIG_BOARD_TYPE_GEZIPAI)  
+    set(BOARD_TYPE "gezipai")    
     set(LVGL_TEXT_FONT ${FONT_PUHUI_COMMON_14_1})
     set(LVGL_ICON_FONT ${FONT_AWESOME_14_1})
 elseif(CONFIG_BOARD_TYPE_BREAD_COMPACT_ML307)

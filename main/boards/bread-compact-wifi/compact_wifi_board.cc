@@ -20,6 +20,10 @@
 #include <esp_lcd_panel_sh1106.h>
 #endif
 
+#ifdef CONFIG_ENABLE_OTTO
+extern void InitializeOttoController();
+#endif
+
 #define TAG "CompactWifiBoard"
 
 class CompactWifiBoard : public WifiBoard {
@@ -167,6 +171,9 @@ public:
         InitializeSsd1306Display();
         InitializeButtons();
         InitializeTools();
+#ifdef CONFIG_ENABLE_OTTO
+        InitializeOttoController();
+#endif
     }
 
     virtual Led* GetLed() override {
