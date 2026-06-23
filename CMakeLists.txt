@@ -10,7 +10,7 @@ set(PROJECT_VER "2.0.0")
 add_compile_options(-Wno-missing-field-initializers)
 
 # Uncomment to enable support for the Weirboard (my custom board)
-add_compile_options(-DMY_WEIRDBOARD=1)
+#add_compile_options(-DMY_WEIRDBOARD=1)
 
 # Uncomment to temporarily disable OTA firmware upgrade (server config/time sync still works)
 add_compile_options(-DCONFIG_DISABLE_OTA_UPGRADE=1)

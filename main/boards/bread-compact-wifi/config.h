@@ -37,13 +37,34 @@
 
     #define DISPLAY_SDA_PIN GPIO_NUM_38 //GPIO_NUM_41
     #define DISPLAY_SCL_PIN GPIO_NUM_39 //GPIO_NUM_42
+
+    // Otto robot servo pins
+    #define RIGHT_LEG_PIN GPIO_NUM_41
+    #define RIGHT_FOOT_PIN GPIO_NUM_42
+
+    #define LEFT_LEG_PIN GPIO_NUM_17
+    #define LEFT_FOOT_PIN GPIO_NUM_18
+
+    #define LEFT_HAND_PIN GPIO_NUM_8
+    #define RIGHT_HAND_PIN GPIO_NUM_40
 #else
     #define VOLUME_UP_BUTTON_GPIO   GPIO_NUM_40
     #define VOLUME_DOWN_BUTTON_GPIO GPIO_NUM_39
 
     #define DISPLAY_SDA_PIN GPIO_NUM_41
     #define DISPLAY_SCL_PIN GPIO_NUM_42
+
+    // Otto robot servo pins
+    #define RIGHT_LEG_PIN GPIO_NUM_37
+    #define RIGHT_FOOT_PIN GPIO_NUM_38
+
+    #define LEFT_LEG_PIN GPIO_NUM_17
+    #define LEFT_FOOT_PIN GPIO_NUM_18
+
+    #define LEFT_HAND_PIN GPIO_NUM_8
+    #define RIGHT_HAND_PIN GPIO_NUM_35
 #endif    
+
 #define DISPLAY_WIDTH   128
 
 #if CONFIG_OLED_SSD1306_128X32
@@ -58,20 +79,9 @@
 #endif
 
 #define DISPLAY_MIRROR_X false
-#define DISPLAY_MIRROR_Y true
-
+#define DISPLAY_MIRROR_Y false
 
 // A MCP Test: Control a lamp
 #define LAMP_GPIO GPIO_NUM_47
-
-// Otto robot servo pins
-#define RIGHT_LEG_PIN GPIO_NUM_41
-#define RIGHT_FOOT_PIN GPIO_NUM_42
-
-#define LEFT_LEG_PIN GPIO_NUM_17
-#define LEFT_FOOT_PIN GPIO_NUM_18
-
-#define LEFT_HAND_PIN GPIO_NUM_8
-#define RIGHT_HAND_PIN GPIO_NUM_40
 
 #endif // _BOARD_CONFIG_H_
