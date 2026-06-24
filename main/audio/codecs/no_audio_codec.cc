@@ -156,6 +156,12 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
 
+    // spk_slot_mask == BOTH 时启用立体声 slot（L/R 双声道交错）
+    i2s_slot_stereo_ = (spk_slot_mask == I2S_STD_SLOT_BOTH);
+    if (i2s_slot_stereo_) {
+        output_channels_ = 2;
+    }
+
     // Create a new channel for speaker
     i2s_chan_config_t chan_cfg = {
         .id = (i2s_port_t)0,
@@ -181,7 +187,7 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
         .slot_cfg = {
             .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
             .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_MONO,
+            .slot_mode = i2s_slot_stereo_ ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO,
             .slot_mask = spk_slot_mask,
             .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
             .ws_pol = false,
@@ -212,6 +218,8 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     chan_cfg.id = (i2s_port_t)1;
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, nullptr, &rx_handle_));
     std_cfg.clk_cfg.sample_rate_hz = (uint32_t)input_sample_rate_;
+    // mic 始终为 mono（spk 可能切到 stereo，要单独重置）
+    std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO;
     std_cfg.slot_cfg.slot_mask = mic_slot_mask;
     std_cfg.gpio_cfg.bclk = mic_sck;
     std_cfg.gpio_cfg.ws = mic_ws;
@@ -283,6 +291,33 @@ NoAudioCodecSimplexPdm::NoAudioCodecSimplexPdm(int input_sample_rate, int output
     ESP_LOGE(TAG, "PDM is not supported");
 #endif
     ESP_LOGI(TAG, "Simplex channels created");
+}
+
+void NoAudioCodec::OutputData(std::vector<int16_t>& data) {
+    OutputData(data, 1);
+}
+
+void NoAudioCodec::OutputData(std::vector<int16_t>& data, int channels) {
+    // I2S slot 为 mono：始终按原样写入（调用方应保证 channels==1）
+    if (!i2s_slot_stereo_) {
+        Write(data.data(), data.size());
+        return;
+    }
+    // I2S slot 为 stereo
+    if (channels == 2) {
+        // data 已是交错 L,R，直接写入
+        Write(data.data(), data.size());
+        return;
+    }
+    // channels == 1：mono 复制到 L/R 交错
+    const size_t mono_samples = data.size();
+    std::vector<int16_t> interleaved(mono_samples * 2);
+    for (size_t i = 0; i < mono_samples; ++i) {
+        int16_t s = data[i];
+        interleaved[i * 2]     = s;
+        interleaved[i * 2 + 1] = s;
+    }
+    Write(interleaved.data(), interleaved.size());
 }
 
 int NoAudioCodec::Write(const int16_t* data, int samples) {

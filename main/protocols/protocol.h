@@ -11,6 +11,7 @@ struct AudioStreamPacket {
     int sample_rate = 0;
     int frame_duration = 0;
     uint32_t timestamp = 0;
+    int channels = 1;  // PCM payload 声道数：1=mono，2=stereo 交错 L,R,L,R...
     std::vector<uint8_t> payload;
 };
 

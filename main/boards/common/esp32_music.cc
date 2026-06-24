@@ -1338,41 +1338,20 @@ void Esp32Music::PlayAudioStream() {
 
                 int16_t* final_pcm_data = pcm_buffer;
                 int final_sample_count = mp3_frame_info_.outputSamps;
-                std::vector<int16_t> mono_buffer;
-                
-                // 如果是双通道，转换为单通道混合
-                if (mp3_frame_info_.nChans == 2) {
-                    // 双通道转单通道：将左右声道混合
-                    int stereo_samples = mp3_frame_info_.outputSamps;  // 包含左右声道的总样本数
-                    int mono_samples = stereo_samples / 2;  // 实际的单声道样本数
-                    
-                    mono_buffer.resize(mono_samples);
-                    
-                    for (int i = 0; i < mono_samples; ++i) {
-                        // 混合左右声道 (L + R) / 2
-                        int left = pcm_buffer[i * 2];      // 左声道
-                        int right = pcm_buffer[i * 2 + 1]; // 右声道
-                        mono_buffer[i] = (int16_t)((left + right) / 2);
-                    }
-                    
-                    final_pcm_data = mono_buffer.data();
-                    final_sample_count = mono_samples;
+                int final_channels = (mp3_frame_info_.nChans == 2) ? 2 : 1;
 
-                    ESP_LOGD(TAG, "Converted stereo to mono: %d -> %d samples", 
-                            stereo_samples, mono_samples);
-                } else if (mp3_frame_info_.nChans == 1) {
-                    // 已经是单声道，无需转换
-                    ESP_LOGD(TAG, "Already mono audio: %d samples", final_sample_count);
-                } else {
-                    ESP_LOGW(TAG, "Unsupported channel count: %d, treating as mono", 
+                if (mp3_frame_info_.nChans != 1 && mp3_frame_info_.nChans != 2) {
+                    ESP_LOGW(TAG, "Unsupported channel count: %d, treating as mono",
                             mp3_frame_info_.nChans);
+                    final_channels = 1;
                 }
-                
+
                 // 创建AudioStreamPacket
                 AudioStreamPacket packet;
                 packet.sample_rate = mp3_frame_info_.samprate;
                 packet.frame_duration = 60;  // 使用Application默认的帧时长
                 packet.timestamp = 0;
+                packet.channels = final_channels;
                 
                 // 将int16_t PCM数据转换为uint8_t字节数组
                 size_t pcm_size_bytes = final_sample_count * sizeof(int16_t);
@@ -1400,8 +1379,8 @@ void Esp32Music::PlayAudioStream() {
                     );
                 }
                 
-                ESP_LOGD(TAG, "Sending %d PCM samples (%d bytes, rate=%d, channels=%d->1) to Application", 
-                        final_sample_count, pcm_size_bytes, mp3_frame_info_.samprate, mp3_frame_info_.nChans);
+                ESP_LOGD(TAG, "Sending %d PCM samples (%d bytes, rate=%d, channels=%d) to Application",
+                        final_sample_count, pcm_size_bytes, mp3_frame_info_.samprate, final_channels);
                 
                 // 发送到Application的音频解码队列
                 app.AddAudioData(std::move(packet));

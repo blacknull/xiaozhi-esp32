@@ -26,6 +26,8 @@ public:
     virtual bool SetOutputSampleRate(int sample_rate);
 
     virtual void OutputData(std::vector<int16_t>& data);
+    // channels=2 时 data 为交错 L,R 立体声 PCM；默认实现按 mono 处理（兼容旧 codec）
+    virtual void OutputData(std::vector<int16_t>& data, int channels);
     virtual bool InputData(std::vector<int16_t>& data);
     virtual void Start();
 

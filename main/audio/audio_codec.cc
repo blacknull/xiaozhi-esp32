@@ -18,6 +18,12 @@ void AudioCodec::OutputData(std::vector<int16_t>& data) {
     Write(data.data(), data.size());
 }
 
+void AudioCodec::OutputData(std::vector<int16_t>& data, int channels) {
+    // 默认实现：忽略 channels，按 mono 写入。需要立体声的 codec 应重写本方法。
+    (void)channels;
+    Write(data.data(), data.size());
+}
+
 bool AudioCodec::InputData(std::vector<int16_t>& data) {
     int samples = Read(data.data(), data.size());
     if (samples > 0) {

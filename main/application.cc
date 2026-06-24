@@ -1047,35 +1047,34 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                         ESP_LOGW(TAG, "无法切换采样率，继续使用当前采样率: %d Hz", codec->output_sample_rate());
                     }
                 } else {
-                    // 上采样：线性插值
+                    // 上采样：按声道独立线性插值
+                    const int ch = (packet.channels == 2) ? 2 : 1;
                     float upsample_ratio = codec->output_sample_rate() / static_cast<float>(packet.sample_rate);
+                    int interpolation_count = static_cast<int>(upsample_ratio) - 1;
+                    size_t frames = pcm_data.size() / ch;
                     size_t expected_size = static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
                     resampled.reserve(expected_size);
-                    
-                    for (size_t i = 0; i < pcm_data.size(); ++i) {
-                        // 添加原始样本
-                        resampled.push_back(pcm_data[i]);
-                        
-                        // 计算需要插值的样本数
-                        int interpolation_count = static_cast<int>(upsample_ratio) - 1;
-                        if (interpolation_count > 0 && i + 1 < pcm_data.size()) {
-                            int16_t current = pcm_data[i];
-                            int16_t next = pcm_data[i + 1];
+
+                    for (size_t f = 0; f < frames; ++f) {
+                        // 输出当前帧
+                        for (int c = 0; c < ch; ++c) {
+                            resampled.push_back(pcm_data[f * ch + c]);
+                        }
+                        if (interpolation_count > 0) {
+                            bool has_next = (f + 1 < frames);
                             for (int j = 1; j <= interpolation_count; ++j) {
                                 float t = static_cast<float>(j) / (interpolation_count + 1);
-                                int16_t interpolated = static_cast<int16_t>(current + (next - current) * t);
-                                resampled.push_back(interpolated);
-                            }
-                        } else if (interpolation_count > 0) {
-                            // 最后一个样本，直接重复
-                            for (int j = 1; j <= interpolation_count; ++j) {
-                                resampled.push_back(pcm_data[i]);
+                                for (int c = 0; c < ch; ++c) {
+                                    int16_t cur = pcm_data[f * ch + c];
+                                    int16_t nxt = has_next ? pcm_data[(f + 1) * ch + c] : cur;
+                                    resampled.push_back(static_cast<int16_t>(cur + (nxt - cur) * t));
+                                }
                             }
                         }
                     }
-                    
-                    ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f)", 
-                            pcm_data.size(), resampled.size(), upsample_ratio);
+
+                    ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f, ch=%d)",
+                            pcm_data.size(), resampled.size(), upsample_ratio, ch);
                 }
                 
                 pcm_data = std::move(resampled);
@@ -1087,7 +1086,7 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
             }
             
             // 发送PCM数据到音频编解码器
-            codec->OutputData(pcm_data);
+            codec->OutputData(pcm_data, packet.channels);
             
             audio_service_.UpdateOutputTimestamp();
         }
