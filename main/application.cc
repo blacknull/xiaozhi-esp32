@@ -22,6 +22,37 @@
 
 #define TAG "Application"
 
+// 通用线性重采样：把交错的 int16 PCM 从 src_rate 重采样到 dst_rate。
+// channels 为声道数（1=mono，2=交错 L,R）。同时支持上采样与下采样。
+static std::vector<int16_t> ResamplePcm(const std::vector<int16_t>& in,
+                                        int src_rate, int dst_rate, int channels) {
+    if (channels < 1) channels = 1;
+    if (src_rate == dst_rate || src_rate <= 0 || dst_rate <= 0 || in.empty()) {
+        return in;
+    }
+    size_t in_frames = in.size() / channels;
+    if (in_frames == 0) {
+        return std::vector<int16_t>();
+    }
+    double ratio = static_cast<double>(dst_rate) / src_rate;
+    size_t out_frames = static_cast<size_t>(in_frames * ratio + 0.5);
+    if (out_frames == 0) out_frames = 1;
+
+    std::vector<int16_t> out;
+    out.resize(out_frames * channels);
+    for (size_t o = 0; o < out_frames; ++o) {
+        double src_pos = o / ratio;                 // 对应输入帧的（浮点）位置
+        size_t i0 = static_cast<size_t>(src_pos);
+        double frac = src_pos - i0;
+        size_t i1 = (i0 + 1 < in_frames) ? (i0 + 1) : i0;
+        for (int c = 0; c < channels; ++c) {
+            int s0 = in[i0 * channels + c];
+            int s1 = in[i1 * channels + c];
+            out[o * channels + c] = static_cast<int16_t>(s0 + (s1 - s0) * frac);
+        }
+    }
+    return out;
+}
 
 static const char* const STATE_STRINGS[] = {
     "unknown",
@@ -1035,48 +1066,36 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                 }
                 
                 std::vector<int16_t> resampled;
-                
-                if (packet.sample_rate > codec->output_sample_rate()) {
-                    ESP_LOGI(TAG, "音乐播放：将采样率从 %d Hz 切换到 %d Hz", 
+
+                // 双工 codec（如 ESP-S3-BOX3 的 BoxAudioCodec）的 mic 与喇叭共用同一路
+                // I2S 时钟，动态切换输出采样率会改变 mic 时钟，导致语音唤醒失效。
+                // 因此仅对单工 codec 才用硬件切换采样率（音质更好且不影响 mic），
+                // 双工 codec 一律在软件里重采样到固定输出采样率。
+                if (!codec->duplex() && packet.sample_rate > codec->output_sample_rate()) {
+                    ESP_LOGI(TAG, "音乐播放：将采样率从 %d Hz 切换到 %d Hz",
                         codec->output_sample_rate(), packet.sample_rate);
 
                     // 尝试动态切换采样率
                     if (codec->SetOutputSampleRate(packet.sample_rate)) {
                         ESP_LOGI(TAG, "成功切换到音乐播放采样率: %d Hz", packet.sample_rate);
+                        // 切换成功后无需软件重采样，保持原始数据
+                        resampled = std::move(pcm_data);
                     } else {
-                        ESP_LOGW(TAG, "无法切换采样率，继续使用当前采样率: %d Hz", codec->output_sample_rate());
+                        ESP_LOGW(TAG, "无法切换采样率，改为软件重采样到: %d Hz", codec->output_sample_rate());
+                        resampled = ResamplePcm(pcm_data, packet.sample_rate,
+                                                codec->output_sample_rate(),
+                                                (packet.channels == 2) ? 2 : 1);
                     }
                 } else {
-                    // 上采样：按声道独立线性插值
+                    // 软件线性重采样（同时支持上采样与下采样），按声道独立处理
                     const int ch = (packet.channels == 2) ? 2 : 1;
-                    float upsample_ratio = codec->output_sample_rate() / static_cast<float>(packet.sample_rate);
-                    int interpolation_count = static_cast<int>(upsample_ratio) - 1;
-                    size_t frames = pcm_data.size() / ch;
-                    size_t expected_size = static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
-                    resampled.reserve(expected_size);
-
-                    for (size_t f = 0; f < frames; ++f) {
-                        // 输出当前帧
-                        for (int c = 0; c < ch; ++c) {
-                            resampled.push_back(pcm_data[f * ch + c]);
-                        }
-                        if (interpolation_count > 0) {
-                            bool has_next = (f + 1 < frames);
-                            for (int j = 1; j <= interpolation_count; ++j) {
-                                float t = static_cast<float>(j) / (interpolation_count + 1);
-                                for (int c = 0; c < ch; ++c) {
-                                    int16_t cur = pcm_data[f * ch + c];
-                                    int16_t nxt = has_next ? pcm_data[(f + 1) * ch + c] : cur;
-                                    resampled.push_back(static_cast<int16_t>(cur + (nxt - cur) * t));
-                                }
-                            }
-                        }
-                    }
-
-                    ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f, ch=%d)",
-                            pcm_data.size(), resampled.size(), upsample_ratio, ch);
+                    resampled = ResamplePcm(pcm_data, packet.sample_rate,
+                                            codec->output_sample_rate(), ch);
+                    ESP_LOGI(TAG, "Resampled %d -> %d samples (%d->%d Hz, ch=%d)",
+                            (int)pcm_data.size(), (int)resampled.size(),
+                            packet.sample_rate, codec->output_sample_rate(), ch);
                 }
-                
+
                 pcm_data = std::move(resampled);
             }
             

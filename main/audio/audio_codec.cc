@@ -19,8 +19,20 @@ void AudioCodec::OutputData(std::vector<int16_t>& data) {
 }
 
 void AudioCodec::OutputData(std::vector<int16_t>& data, int channels) {
-    // 默认实现：忽略 channels，按 mono 写入。需要立体声的 codec 应重写本方法。
-    (void)channels;
+    // 默认实现：codec 输出为单声道。若收到立体声（交错 L,R）数据，
+    // 先下混为单声道再写入，避免被当作 mono 直写导致变调变慢。
+    // 需要真正立体声输出的 codec 应重写本方法。
+    if (channels == 2 && output_channels_ == 1) {
+        size_t mono_samples = data.size() / 2;
+        std::vector<int16_t> mono(mono_samples);
+        for (size_t i = 0; i < mono_samples; ++i) {
+            int left = data[i * 2];
+            int right = data[i * 2 + 1];
+            mono[i] = static_cast<int16_t>((left + right) / 2);
+        }
+        Write(mono.data(), mono.size());
+        return;
+    }
     Write(data.data(), data.size());
 }
 
@@ -35,13 +47,16 @@ bool AudioCodec::InputData(std::vector<int16_t>& data) {
 void AudioCodec::Start() {
     Settings settings("audio", false);
     output_volume_ = settings.GetInt("output_volume", output_volume_);
-    if (output_volume_ > 70) {
-        output_volume_ = 70;
+    // 恢复上次保存的音量：仅做合法性钳制（0~100），不再强行限制到 70，
+    // 否则用户设置的较大音量（如 90）重启后会被压回 70。
+    if (output_volume_ > 100) {
+        output_volume_ = 100;
     }
     if (output_volume_ <= 0) {
         ESP_LOGW(TAG, "Output volume value (%d) is too small, setting to default (10)", output_volume_);
         output_volume_ = 10;
     }
+    ESP_LOGI(TAG, "Restored output volume from settings: %d", output_volume_);
 
     // 保存原始输出采样率
     if (original_output_sample_rate_ == 0) {

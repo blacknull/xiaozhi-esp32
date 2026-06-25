@@ -10,9 +10,18 @@
 #include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
+#include <driver/gpio.h>
+#include <esp_timer.h>
 #include <wifi_station.h>
 
 #define TAG "EspBox3Board"
+
+// ESP32-S3-BOX-3 顶部静音键经硬件逻辑门处理后，把"静音状态"映射到 GPIO1
+// （参见 espressif/esp-bsp: BSP_BUTTON_MUTE_IO / BSP_MUTE_STATUS = GPIO_NUM_1）。
+// 它是一个电平状态（按一下锁存翻转），不是按键事件，硬件层面已直接静音麦克风，
+// 固件无法用它做"打断"，但可以读取该电平来感知静音并改善体验。
+#define MUTE_STATUS_GPIO   GPIO_NUM_1
+#define MUTE_POLL_INTERVAL_US  (250 * 1000)
 
 // Init ili9341 by custom cmd
 static const ili9341_lcd_init_cmd_t vendor_specific_init[] = {
@@ -40,6 +49,11 @@ private:
     i2c_master_bus_handle_t i2c_bus_;
     Button boot_button_;
     LcdDisplay* display_;
+
+    // 静音状态监听
+    esp_timer_handle_t mute_timer_ = nullptr;
+    int mute_unmuted_level_ = -1;  // 开机（未静音）时 GPIO1 的电平，用作基准
+    bool mic_muted_ = false;       // 当前是否处于静音
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -86,6 +100,76 @@ private:
             }
         });
 #endif
+    }
+
+    // 初始化静音状态监听：把 GPIO1 配为输入，定时轮询其电平变化。
+    // 开机时假定未静音，以当前电平为"未静音基准"，自适应极性（无需硬编码高/低）。
+    void InitializeMuteMonitor() {
+        gpio_config_t io_conf = {};
+        io_conf.pin_bit_mask = (1ULL << MUTE_STATUS_GPIO);
+        io_conf.mode = GPIO_MODE_INPUT;
+        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;    // 由硬件逻辑门驱动，无需内部上下拉
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.intr_type = GPIO_INTR_DISABLE;
+        ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+        mute_unmuted_level_ = gpio_get_level(MUTE_STATUS_GPIO);
+        mic_muted_ = false;
+        ESP_LOGI(TAG, "Mute monitor init: GPIO%d unmuted level = %d", MUTE_STATUS_GPIO, mute_unmuted_level_);
+
+        esp_timer_create_args_t timer_args = {
+            .callback = [](void* arg) {
+                static_cast<EspBox3Board*>(arg)->PollMuteState();
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "mute_poll",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &mute_timer_));
+        ESP_ERROR_CHECK(esp_timer_start_periodic(mute_timer_, MUTE_POLL_INTERVAL_US));
+    }
+
+    // 在 esp_timer 任务上下文中运行：检测静音电平变化并处理（边沿触发）。
+    void PollMuteState() {
+        int level = gpio_get_level(MUTE_STATUS_GPIO);
+        bool muted = (level != mute_unmuted_level_);
+        if (muted == mic_muted_) {
+            return;  // 无变化
+        }
+        mic_muted_ = muted;
+        ESP_LOGI(TAG, "Microphone mute state changed: %s (GPIO%d level=%d)",
+                 muted ? "MUTED" : "UNMUTED", MUTE_STATUS_GPIO, level);
+
+        // 切回主线程处理，避免在定时器上下文里操作状态机/显示产生竞争。
+        Application::GetInstance().Schedule([this, muted]() {
+            OnMuteStateChanged(muted);
+        });
+    }
+
+    void OnMuteStateChanged(bool muted) {
+        auto& app = Application::GetInstance();
+        auto display = GetDisplay();
+        if (muted) {
+            // 硬件已切断麦克风：提示用户，并在待机时停掉唤醒检测（否则在静默上空转，
+            // 也避免用户误以为"唤醒坏了"）。
+            if (display) {
+                display->ShowNotification("麦克风已静音", 3000);
+            }
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                app.GetAudioService().EnableWakeWordDetection(false);
+            }
+        } else {
+            // 解除静音：提示，并在待机时重启唤醒检测，确保语音唤醒可靠恢复。
+            if (display) {
+                display->ShowNotification("麦克风已开启", 3000);
+            }
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                auto& audio = app.GetAudioService();
+                audio.EnableWakeWordDetection(false);
+                audio.EnableWakeWordDetection(true);
+            }
+        }
     }
 
     void InitializeIli9341Display() {
@@ -135,6 +219,7 @@ public:
         InitializeSpi();
         InitializeIli9341Display();
         InitializeButtons();
+        InitializeMuteMonitor();
         GetBacklight()->RestoreBrightness();
     }
 

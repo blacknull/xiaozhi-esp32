@@ -1108,24 +1108,42 @@ void Esp32Music::PlayAudioStream() {
     int decoder_resets_without_frame = 0;
     static constexpr int kMaxResetsWithoutFrame = 30;  // ~300ms内无任何成功帧则放弃
 
+    // 是否已真正进入过播放（至少在 Idle 状态成功执行过一次播放循环）。
+    // 用于区分两种 Listening：
+    //   1) 播放刚被请求、小智说完"为你播放"后进入聆听（playback_active=false）
+    //      —— 需转回待机以开始播放音乐；
+    //   2) 音乐已在播放中，用户用按键/语音唤醒打断（playback_active=true）
+    //      —— 应停止播放并让设备留在聆听，绝不能把状态翻回去抢占用户操作。
+    bool playback_active = false;
+
     while (is_playing_) {
         // 检查设备状态，只有在空闲状态才播放音乐
         auto& app = Application::GetInstance();
         DeviceState current_state = app.GetDeviceState();
-        
-        // 等小智把话说完了，变成聆听状态之后，马上转成待机状态，进入音乐播放
+
         if (current_state == kDeviceStateListening) {
-            ESP_LOGI(TAG, "Device is in listening state, switching to idle state for music playback");
-            // 切换状态
-            app.ToggleChatState(); // 变成待机状态
-            vTaskDelay(pdMS_TO_TICKS(300));
-            continue;
+            if (!playback_active) {
+                // 初次握手：小智说完"为你播放"后进入聆听，转回待机开始播放音乐
+                ESP_LOGI(TAG, "Device in listening state, switching to idle to start playback");
+                app.ToggleChatState(); // 变成待机状态
+                vTaskDelay(pdMS_TO_TICKS(300));
+                continue;
+            } else {
+                // 音乐已在播放中，用户主动进入聆听（按键/语音唤醒打断）：停止播放并退出，
+                // 让设备保持在聆听状态，不再调用 ToggleChatState 抢占用户操作。
+                ESP_LOGI(TAG, "User interrupted playback (entered listening), stopping music");
+                is_playing_ = false;
+                break;
+            }
         } else if (current_state != kDeviceStateIdle) { // 不是待机状态，就一直卡在这里，不让播放音乐
             ESP_LOGD(TAG, "Device state is %d, pausing music playback", current_state);
             // 如果不是空闲状态，暂停播放
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
+
+        // 已确认处于 Idle 状态，标记播放真正开始
+        playback_active = true;
         
         // 设备状态检查通过，显示当前播放的歌名
         if (!song_name_displayed_ && !current_song_name_.empty()) {
